@@ -28,6 +28,7 @@ python -m app.main              # lance Marcus
 - `app/llm.py` : appels à Claude et boucle d'outils
 - `app/memory.py` : messages, souvenirs, extraction après chaque échange
 - `app/usage.py` : journal des coûts et plafond quotidien
+- `app/voice.py` : transcription des vocaux (5 minutes au maximum)
 - `app/config.py`, `app/db.py`, `app/dates.py` : configuration, base, dates
 - `prompts/` : personnalité de Marcus et consignes de mémoire
 - `sql/schema.sql` : tables `messages`, `memories`, `reminders`, `usage`

@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import dates, llm, memory, usage
+from app import dates, llm, memory, usage, voice
 from app.config import load_config
 from app.db import make_pool
 
@@ -86,22 +86,64 @@ async def learn_in_background(context, user_text, answer, source_id) -> None:
             logger.exception("Échec de la mise à jour de la mémoire")
 
 
+async def over_budget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Prévient Hugo et renvoie True si le plafond du jour est atteint."""
+    plafond = context.bot_data["config"].daily_budget_usd
+    jour, _ = await usage.spent(context.bot_data["pool"])
+    if jour < plafond:
+        return False
+    await update.message.reply_text(
+        f"J'ai atteint le plafond de {usage.format_dollars(plafond)}"
+        " de dépense pour aujourd'hui. Je reprends demain."
+    )
+    return True
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        if await over_budget(update, context):
+            return
+    except Exception:
+        logger.exception("Impossible de lire la dépense du jour")
+        await update.message.reply_text(MESSAGE_ERREUR)
+        return
+    await answer(update, context, update.message.text)
+
+
+async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = context.bot_data
+    vocal = update.message.voice
+    if vocal.duration > voice.DUREE_MAX_SECONDES:
+        await update.message.reply_text("Ton vocal dépasse 5 minutes, je ne peux pas l'écouter. Coupe-le en plusieurs ?")
+        return
+    try:
+        if await over_budget(update, context):
+            return
+        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+        fichier = await context.bot.get_file(vocal.file_id)
+        audio = bytes(await fichier.download_as_bytearray())
+        texte = await voice.transcribe(data["openai"], audio)
+        await usage.record_transcription(data["pool"], voice.TRANSCRIPTION_MODEL, vocal.duration)
+    except Exception:
+        logger.exception("Échec de la transcription d'un vocal")
+        await update.message.reply_text(MESSAGE_ERREUR)
+        return
+    if not texte:
+        await update.message.reply_text("Je n'ai rien entendu dans ce vocal.")
+        return
+    # Hugo voit ce que Marcus a compris, puis la réponse
+    await answer(update, context, texte, entete=f"🎤 « {texte} »\n\n")
+
+
+async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, entete: str = "") -> None:
+    """Répond à un message (écrit ou transcrit) : souvenirs, Claude, base, apprentissage."""
     data = context.bot_data
     config, pool = data["config"], data["pool"]
-    user_text = update.message.text
     try:
-        jour, _ = await usage.spent(pool)
-        if jour >= config.daily_budget_usd:
-            await update.message.reply_text(
-                f"J'ai atteint le plafond de {usage.format_dollars(config.daily_budget_usd)}"
-                " de dépense pour aujourd'hui. Je reprends demain."
-            )
-            return
         await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         history = await memory.recent_messages(pool, TAILLE_HISTORIQUE)
         souvenirs = await memory.memories_for_prompt(pool, data["embed"], user_text)
-        answer = await llm.reply(
+        reponse = await llm.reply(
             data["claude"],
             config.model,
             llm.build_system(data["system_prompt"], memory.format_for_prompt(souvenirs)),
@@ -112,14 +154,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         # L'échange n'entre en base qu'une fois la réponse obtenue
         source_id = await memory.save_message(pool, "user", user_text)
-        await memory.save_message(pool, "assistant", answer)
+        await memory.save_message(pool, "assistant", reponse)
     except Exception:
         logger.exception("Échec du traitement d'un message")
-        await update.message.reply_text(MESSAGE_ERREUR)
+        await update.message.reply_text(entete + MESSAGE_ERREUR)
         return
-    await send_long(update, answer)
+    await send_long(update, entete + reponse)
     context.application.create_task(
-        learn_in_background(context, user_text, answer, source_id), update=update
+        learn_in_background(context, user_text, reponse, source_id), update=update
     )
 
 
@@ -191,7 +233,7 @@ async def on_couts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_unsupported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Je ne lis que le texte pour l'instant.")
+    await update.message.reply_text("Je comprends le texte et les vocaux, pas encore les photos ni les fichiers.")
 
 
 async def keep_database_awake(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -232,13 +274,13 @@ def build_application() -> Application:
         .build()
     )
     pool = make_pool(config.database_url)
+    openai_client = openai.AsyncOpenAI(api_key=config.openai_api_key, timeout=60.0)
     app.bot_data.update(
         config=config,
         pool=pool,
         claude=anthropic.AsyncAnthropic(api_key=config.anthropic_api_key, timeout=30.0),
-        embed=memory.make_embedder(
-            openai.AsyncOpenAI(api_key=config.openai_api_key, timeout=30.0), pool
-        ),
+        openai=openai_client,
+        embed=memory.make_embedder(openai_client, pool),
         system_prompt=llm.load_system_prompt(),
         learn_lock=asyncio.Lock(),
     )
@@ -251,6 +293,7 @@ def build_application() -> Application:
     app.add_handler(
         MessageHandler(filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND, on_text)
     )
+    app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & filters.VOICE, on_voice))
     app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & ~filters.TEXT, on_unsupported))
     app.add_error_handler(on_error)
     app.job_queue.run_daily(

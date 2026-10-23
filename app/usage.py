@@ -13,6 +13,8 @@ PRIX = {
 }
 # Modèle inconnu : on compte au prix de Sonnet, pour ne jamais sous-estimer
 PRIX_PAR_DEFAUT = PRIX["claude-sonnet-5-5"]
+# La transcription se paie à la minute
+PRIX_TRANSCRIPTION_MINUTE = 0.003
 
 AUJOURD_HUI = "(now() at time zone 'Europe/Paris')::date"
 
@@ -28,8 +30,15 @@ def cost(model: str, input_tokens=0, output_tokens=0, cache_read=0, cache_write=
     return total / 1_000_000
 
 
-async def record(pool, service, model, input_tokens=0, output_tokens=0, cache_read=0, cache_write=0):
-    """Enregistre un appel ; une erreur ici ne doit jamais bloquer une réponse."""
+async def record(
+    pool, service, model, input_tokens=0, output_tokens=0, cache_read=0, cache_write=0, cost_usd=None
+):
+    """Enregistre un appel ; une erreur ici ne doit jamais bloquer une réponse.
+
+    cost_usd remplace le calcul par tokens (services facturés autrement, comme la transcription).
+    """
+    if cost_usd is None:
+        cost_usd = cost(model, input_tokens, output_tokens, cache_read, cache_write)
     try:
         async with pool.connection() as conn:
             await conn.execute(
@@ -43,7 +52,7 @@ async def record(pool, service, model, input_tokens=0, output_tokens=0, cache_re
                     output_tokens,
                     cache_read,
                     cache_write,
-                    cost(model, input_tokens, output_tokens, cache_read, cache_write),
+                    cost_usd,
                 ),
             )
     except Exception:
@@ -60,6 +69,12 @@ async def record_claude(pool, response) -> None:
         u.output_tokens,
         u.cache_read_input_tokens or 0,
         u.cache_creation_input_tokens or 0,
+    )
+
+
+async def record_transcription(pool, model: str, duration_seconds: int) -> None:
+    await record(
+        pool, "openai", model, cost_usd=duration_seconds / 60 * PRIX_TRANSCRIPTION_MINUTE
     )
 
 

@@ -126,8 +126,8 @@ Ordre révisé le 23/10/2026 (voir la révision en haut) ; les numéros de phase
 
 1. Phase 0 — Comptes et clés ✅
 2. Phase 1 — Bot qui répond ✅
-3. Phase 2 — Mémoire, journal des coûts
-4. Phase 3 — Vocaux → la V1 est complète
+3. Phase 2 — Mémoire, journal des coûts ✅
+4. Phase 3 — Vocaux → la V1 est complète ✅
 5. Phase 6 — Mise en production sur le VPS (le bot tourne PC éteint ; Hugo s'en sert au quotidien)
 6. Phase 4 — Rappels, Google Agenda, point du matin
 7. Test téléphonie — OVHcloud branché sur Vapi, après 2 semaines d'usage de la V1
