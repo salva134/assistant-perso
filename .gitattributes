@@ -1,0 +1,4 @@
+# Fins de ligne Unix partout : les scripts .sh et les fichiers systemd
+# doivent arriver intacts sur le serveur Linux
+* text=auto eol=lf
+*.ps1 text eol=crlf

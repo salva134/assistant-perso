@@ -1,0 +1,12 @@
+[Unit]
+Description=Sauvegarde de la mémoire de Marcus
+
+[Service]
+Type=oneshot
+User=marcus
+WorkingDirectory=/home/marcus/assistant-perso
+ExecStart=/home/marcus/assistant-perso/.venv/bin/python scripts/backup.py /home/marcus/backups
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/marcus/backups
+PrivateTmp=true

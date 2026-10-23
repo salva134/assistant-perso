@@ -29,6 +29,7 @@ logger = logging.getLogger("marcus")
 TAILLE_HISTORIQUE = 20
 LONGUEUR_MAX_TELEGRAM = 4096
 MESSAGE_ERREUR = "Petit souci, réessaie dans un instant"
+ALERTE_APRES_ECHECS = 3
 
 
 def is_authorized(update: Update, allowed_user_id: int) -> bool:
@@ -51,6 +52,25 @@ def parse_correction(args: str) -> tuple[str, str] | None:
 async def send_long(update: Update, text: str) -> None:
     for morceau in split_message(text):
         await update.message.reply_text(morceau)
+
+
+async def record_failure(context: ContextTypes.DEFAULT_TYPE, ou: str) -> None:
+    """Au 3e échec d'affilée (réponse, vocal ou mémoire), Hugo est prévenu à part."""
+    data = context.bot_data
+    data["echecs"] = data.get("echecs", 0) + 1
+    if data["echecs"] == ALERTE_APRES_ECHECS:
+        try:
+            await context.bot.send_message(
+                data["config"].allowed_user_id,
+                f"⚠️ {ALERTE_APRES_ECHECS} échecs d'affilée (dernier : {ou}). "
+                "Si ça continue, préviens Claude Code : les détails sont dans les journaux.",
+            )
+        except Exception:
+            logger.exception("Impossible d'envoyer l'alerte")
+
+
+def record_success(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.bot_data["echecs"] = 0
 
 
 async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -84,6 +104,7 @@ async def learn_in_background(context, user_text, answer, source_id) -> None:
             )
         except Exception:
             logger.exception("Échec de la mise à jour de la mémoire")
+            await record_failure(context, "mémoire")
 
 
 async def over_budget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -127,6 +148,7 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         logger.exception("Échec de la transcription d'un vocal")
         await update.message.reply_text(MESSAGE_ERREUR)
+        await record_failure(context, "vocal")
         return
     if not texte:
         await update.message.reply_text("Je n'ai rien entendu dans ce vocal.")
@@ -158,7 +180,9 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
     except Exception:
         logger.exception("Échec du traitement d'un message")
         await update.message.reply_text(entete + MESSAGE_ERREUR)
+        await record_failure(context, "réponse")
         return
+    record_success(context)
     await send_long(update, entete + reponse)
     context.application.create_task(
         learn_in_background(context, user_text, reponse, source_id), update=update

@@ -1,0 +1,25 @@
+[Unit]
+Description=Marcus, assistant personnel sur Telegram
+After=network-online.target
+Wants=network-online.target
+# Ne jamais abandonner : on relance tant qu'il le faut
+StartLimitIntervalSec=0
+
+[Service]
+User=marcus
+WorkingDirectory=/home/marcus/assistant-perso
+ExecStart=/home/marcus/assistant-perso/.venv/bin/python -m app.main
+# Prévient Hugo sur Telegram si Marcus s'arrête sans qu'on l'ait demandé
+ExecStopPost=/home/marcus/assistant-perso/deploy/alert.sh
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+# Le bot n'écrit rien sur le disque : on le lui interdit
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

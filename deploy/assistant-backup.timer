@@ -1,0 +1,10 @@
+[Unit]
+Description=Sauvegarde hebdomadaire de la mémoire de Marcus
+
+[Timer]
+# Chaque dimanche à 3 h 30 ; rattrapée au démarrage si le serveur était éteint
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
