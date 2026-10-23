@@ -1,0 +1,21 @@
+# Secrets : ne jamais committer
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Éditeurs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Sauvegardes locales de la base
+backups/
+*.sql.gz
