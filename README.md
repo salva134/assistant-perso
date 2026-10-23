@@ -15,6 +15,20 @@ python scripts/check_keys.py    # vérifie chaque service
 python -m app.main              # lance Marcus
 ```
 
+## Marcus tourne sur le PC
+
+Une tâche planifiée Windows « Marcus » le lance au démarrage du PC (même sans ouvrir de session), le relance 10 s après un plantage et prévient sur Telegram. Journal : `logs/marcus.log`. Sauvegarde chaque dimanche à 3 h 30 dans `backups/`.
+
+```bash
+powershell -ExecutionPolicy Bypass -File deploy\windows\installer_tache.ps1
+```
+
+- Arrêter Marcus : `Stop-ScheduledTask -TaskName Marcus`
+- Le relancer (après une mise à jour du code) : `Stop-ScheduledTask -TaskName Marcus; Start-ScheduledTask -TaskName Marcus`
+- Ne jamais lancer `python -m app.main` en même temps que la tâche : deux copies se gênent (« Conflict »).
+
+Pour passer un jour sur un serveur Linux : `.\deploy\deploy.ps1 -Serveur <IP> -Premiere` (voir `deploy/`).
+
 ## Commandes Telegram
 
 - `/souvenirs` : ce que Marcus sait de toi, numéroté

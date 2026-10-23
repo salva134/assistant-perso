@@ -3,7 +3,10 @@
 import asyncio
 import datetime
 import logging
+import os
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -21,6 +24,7 @@ from telegram.ext import (
 )
 
 from app import dates, llm, memory, usage, voice
+from app.backup import backup
 from app.config import load_config
 from app.db import make_pool
 
@@ -266,6 +270,16 @@ async def keep_database_awake(context: ContextTypes.DEFAULT_TYPE) -> None:
         await conn.execute("select 1")
 
 
+async def weekly_backup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    config = context.bot_data["config"]
+    try:
+        resume = await asyncio.to_thread(backup, config.database_url, Path(os.environ["BACKUP_DIR"]))
+        logger.info("Sauvegarde : %s", resume)
+    except Exception:
+        logger.exception("Échec de la sauvegarde hebdomadaire")
+        await record_failure(context, "sauvegarde")
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Erreur non gérée", exc_info=context.error)
 
@@ -320,16 +334,28 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & filters.VOICE, on_voice))
     app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & ~filters.TEXT, on_unsupported))
     app.add_error_handler(on_error)
-    app.job_queue.run_daily(
-        keep_database_awake, time=datetime.time(4, 0, tzinfo=ZoneInfo(config.timezone))
-    )
+    fuseau = ZoneInfo(config.timezone)
+    app.job_queue.run_daily(keep_database_awake, time=datetime.time(4, 0, tzinfo=fuseau))
+    # Sur le PC, Marcus fait lui-même sa sauvegarde du dimanche (sur un serveur, c'est systemd)
+    if os.environ.get("BACKUP_DIR"):
+        # days : 0 = dimanche pour python-telegram-bot
+        app.job_queue.run_daily(weekly_backup, time=datetime.time(3, 30, tzinfo=fuseau), days=(0,))
     return app
 
 
+def setup_logging() -> None:
+    format_ = "%(asctime)s %(levelname)s %(name)s : %(message)s"
+    fichier = os.environ.get("LOG_FILE")
+    if fichier:
+        # Lancé sans fenêtre (tâche Windows) : journal dans un fichier, 3 × 5 Mo au maximum
+        handler = RotatingFileHandler(fichier, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        logging.basicConfig(format=format_, level=logging.INFO, handlers=[handler])
+    else:
+        logging.basicConfig(format=format_, level=logging.INFO)
+
+
 def main() -> None:
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(name)s : %(message)s", level=logging.INFO
-    )
+    setup_logging()
     # httpx journalise chaque URL Telegram, et ces URL contiennent le token
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if sys.platform == "win32":

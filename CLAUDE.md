@@ -18,6 +18,9 @@ On avance phase par phase, jamais deux à la fois.
 - Réponses, commentaires et messages de commit en français.
 
 ## Commandes
-- Lancer le bot : `python -m app.main`
+- Marcus tourne en permanence via la tâche planifiée Windows « Marcus » : la redémarrer
+  après un changement de code (`Stop-ScheduledTask -TaskName Marcus; Start-ScheduledTask -TaskName Marcus`),
+  et ne jamais lancer `python -m app.main` en parallèle. Journal : `logs/marcus.log`.
+- Lancer le bot à la main (tâche arrêtée) : `python -m app.main`
 - Tests : `pytest -q`
 - Vérifier les clés : `python scripts/check_keys.py`

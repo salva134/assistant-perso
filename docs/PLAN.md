@@ -128,7 +128,7 @@ Ordre révisé le 23/10/2026 (voir la révision en haut) ; les numéros de phase
 2. Phase 1 — Bot qui répond ✅
 3. Phase 2 — Mémoire, journal des coûts ✅
 4. Phase 3 — Vocaux → la V1 est complète ✅
-5. Phase 6 — Mise en production sur le VPS (le bot tourne PC éteint ; Hugo s'en sert au quotidien)
+5. Phase 6 — Mise en production ✅ sur le PC (23/10/2026) : Hugo garde son PC allumé en permanence (veille désactivée) plutôt que de payer un VPS. Une tâche planifiée Windows lance Marcus au démarrage, le relance s'il plante et prévient Hugo ; sauvegarde chaque dimanche dans `backups/`. Les fichiers VPS (`deploy/`) restent prêts : `.\deploy\deploy.ps1 -Serveur <IP> -Premiere`.
 6. Phase 4 — Rappels, Google Agenda, point du matin
 7. Test téléphonie — OVHcloud branché sur Vapi, après 2 semaines d'usage de la V1
 8. Phase 5 — Appels sortants
