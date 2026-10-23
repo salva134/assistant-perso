@@ -1,5 +1,5 @@
 -- Schéma de départ (plan du projet, « Conception de la mémoire »).
--- À coller dans Supabase > SQL Editor, puis Run (déjà appliqué le 2026-10-23).
+-- Appliquer avec : python scripts/apply_schema.py (sans risque de le relancer).
 
 create extension if not exists vector;
 
@@ -30,8 +30,24 @@ create table if not exists reminders (
   created_at timestamptz default now()
 );
 
+-- Journal des coûts : une ligne par appel à une API payante
+create table if not exists usage (
+  id bigserial primary key,
+  day date not null default (now() at time zone 'Europe/Paris')::date,
+  service text not null,       -- 'claude' ou 'openai'
+  model text not null,
+  input_tokens integer not null default 0,
+  output_tokens integer not null default 0,
+  cache_read_tokens integer not null default 0,
+  cache_write_tokens integer not null default 0,
+  cost_usd numeric(12, 6) not null,
+  created_at timestamptz default now()
+);
+create index if not exists usage_day_idx on usage (day);
+
 -- RLS activé sans aucune politique : la clé publique (anon) ne voit rien,
--- seul le bot, avec la clé secrète, lit et écrit.
+-- seul le bot, avec la connexion directe, lit et écrit.
 alter table messages enable row level security;
 alter table memories enable row level security;
 alter table reminders enable row level security;
+alter table usage enable row level security;

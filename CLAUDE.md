@@ -6,7 +6,7 @@ appels via Vapi et une ligne OVHcloud. Plan complet : @docs/PLAN.md.
 On avance phase par phase, jamais deux à la fois.
 
 ## Stack
-- Python 3.12, python-telegram-bot (polling), anthropic, openai, psycopg + pgvector.
+- Python 3.12+ (3.13 sur le PC), python-telegram-bot (polling), anthropic, openai, psycopg + pgvector.
 - Modèle par défaut : claude-haiku-5-5. Fuseau horaire : Europe/Paris partout.
 
 ## Règles

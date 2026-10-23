@@ -3,6 +3,16 @@
 Ce fichier regroupe le plan et le guide pas à pas. Claude Code s'y réfère à chaque phase.
 On avance phase par phase, jamais deux à la fois.
 
+## Révision du 23/10/2026 (après les phases 0 et 1)
+
+Hugo a donné carte blanche pour améliorer le plan. Changements, et pourquoi :
+
+1. **Nouvel ordre : V1 complète, puis serveur, puis le reste.** Le plan disait à la fois « tester le téléphone juste après la phase 1 » et « finir la V1 et s'en servir 2 semaines avant de toucher aux appels ». Or pour s'en servir, le bot doit tourner PC éteint, et les rappels de la phase 4 ne sonnent pas si le PC dort. Ordre retenu : mémoire → vocaux → serveur → rappels et agenda → test téléphonie → appels.
+2. **Mémoire plus fiable.** Tant qu'il y a peu de souvenirs (moins de 300 environ, soit quelques mois d'usage), tous partent dans le prompt : aucun risque que la recherche par similarité rate un souvenir utile, pour moins de 0,001 $ par message avec le cache de prompt. La recherche vectorielle ne prend le relais qu'au-delà. L'extraction voit les souvenirs existants et décide d'ajouter, de modifier ou de supprimer : le seuil de similarité 0,90 ne savait pas gérer « j'ai déménagé à Paris » face à « habite à Lyon ».
+3. **Journal des coûts et plafond quotidien dès la phase 2.** Chaque appel aux API est compté en base ; au-delà de 1 $ par jour, Marcus prévient Hugo et s'arrête de répondre jusqu'au lendemain. `/couts` affiche la dépense du jour et du mois.
+4. **Phrase d'ouverture des appels corrigée** (phase 5) : elle doit dire « assistant IA » et annoncer l'enregistrement, comme l'exige le cadre légal.
+5. **Petits ajouts** : date et heure de Paris données au modèle à chaque message ; une requête quotidienne à la base pour qu'elle ne passe pas en pause en cas de silence ; Python 3.12 ou plus récent (le PC a la 3.13) ; Vapi n'est plus exigé pour finir la phase 0.
+
 ## Objectif et périmètre
 
 Construire un assistant personnel, réservé à Hugo, qui se souvient de lui et agit à sa place : d'abord par messages, puis par téléphone. Chaque version doit fonctionner seule avant de passer à la suivante.
@@ -30,7 +40,7 @@ Tout passe par le bot (Python) : il reçoit le message, transcrit les vocaux, ch
 
 | Brique | Choix | Pourquoi | Alternative |
 | --- | --- | --- | --- |
-| Langage | Python 3.12 | Écosystème IA le plus riche, librairies Telegram mûres | Node.js (TypeScript) |
+| Langage | Python 3.12 ou plus récent | Écosystème IA le plus riche, librairies Telegram mûres | Node.js (TypeScript) |
 | Interface | Bot Telegram (python-telegram-bot, polling) | Gratuit, vocaux natifs | Interface web perso |
 | Modèle IA | claude-haiku-5-5 au quotidien, claude-sonnet-5-5 pour les tâches lourdes ; actions déclarées comme outils (tool use) | Haiku : 0,10 $ par million de tokens en entrée | GPT, Mistral |
 | Mémoire | Supabase (Postgres + extension pgvector), connexion par psycopg + pgvector | Données et recherche par similarité au même endroit | SQLite + sqlite-vec |
@@ -48,8 +58,8 @@ La mémoire vit dans Supabase, jamais dans le modèle : à chaque message, le bo
 | --- | --- | --- |
 | Profil | Prénom, ville, travail | À chaque message |
 | Préférences de réponse | « Réponses courtes, en français » | À chaque message |
-| Faits durables | « Préfère réserver vers 20 h » | Quand la recherche le juge pertinent |
-| Événements | « Table réservée chez X le 21/10 » | Sur question ou pour un rappel |
+| Faits durables | « Préfère réserver vers 20 h » | À chaque message tant que la mémoire est petite, puis quand la recherche le juge pertinent |
+| Événements | « Table réservée chez X le 21/10 » | Idem |
 | Conversation en cours | Les 20 derniers messages | À chaque message |
 
 Schéma :
@@ -85,19 +95,18 @@ create table reminders (
 );
 ```
 
-Écriture, après chaque échange :
+Écriture, après chaque échange (en arrière-plan, sans retarder la réponse) :
 
-1. Un appel court au modèle extrait de 0 à 3 faits durables, ou rien.
-2. Chaque fait est comparé aux souvenirs existants par similarité.
-3. Fait très proche d'un souvenir existant : mise à jour, pas de doublon.
-4. Fait nouveau : insertion avec son embedding.
-5. Filtre strict : jamais de mot de passe, code, numéro de carte ou IBAN.
+1. Un appel court à Haiku reçoit l'échange et la liste des souvenirs existants (avec leurs numéros).
+2. Il renvoie, en JSON validé, de 0 à 3 opérations : ajouter, modifier le souvenir n°X, supprimer le souvenir n°X.
+3. Chaque souvenir ajouté ou modifié reçoit son embedding (pour la recherche future).
+4. Filtre strict, dans la consigne et dans le code : jamais de mot de passe, code, numéro de carte ou IBAN.
 
 Lecture, avant chaque réponse :
 
-1. Calcul de l'embedding du message reçu.
-2. Récupération des 5 à 8 souvenirs les plus proches.
-3. Prompt final = consignes + profil + préférences + souvenirs trouvés + 20 derniers messages + message.
+1. Moins de 300 souvenirs : tous vont dans le prompt, rangés par type, dans un bloc mis en cache.
+2. Au-delà : profil et préférences toujours, plus les 8 souvenirs les plus proches du message (embeddings).
+3. Prompt final = consignes + souvenirs + date et heure de Paris + 20 derniers messages + message.
 
 Commandes Telegram : `/souvenirs` (liste), `/oublie <texte>` (supprime), `/corrige <ancien> -> <nouveau>` (remplace).
 
@@ -113,14 +122,16 @@ Commandes Telegram : `/souvenirs` (liste), `/oublie <texte>` (supprime), `/corri
 
 ## Ordre des phases
 
-1. Phase 0 — Comptes et clés
-2. Phase 1 — Bot qui répond
-3. Test téléphonie — OVHcloud branché sur Vapi
-4. Phase 2 — Mémoire
-5. Phase 3 — Vocaux
+Ordre révisé le 23/10/2026 (voir la révision en haut) ; les numéros de phase ne changent pas.
+
+1. Phase 0 — Comptes et clés ✅
+2. Phase 1 — Bot qui répond ✅
+3. Phase 2 — Mémoire, journal des coûts
+4. Phase 3 — Vocaux → la V1 est complète
+5. Phase 6 — Mise en production sur le VPS (le bot tourne PC éteint ; Hugo s'en sert au quotidien)
 6. Phase 4 — Rappels, Google Agenda, point du matin
-7. Phase 5 — Appels sortants
-8. Phase 6 — Mise en production sur le VPS
+7. Test téléphonie — OVHcloud branché sur Vapi, après 2 semaines d'usage de la V1
+8. Phase 5 — Appels sortants
 
 ---
 
@@ -197,7 +208,7 @@ Supabase (SELECT 1 et présence de l'extension vector), Vapi (liste des assistan
 Affiche OK ou l'erreur exacte pour chacun, sans jamais afficher les clés. Lance-le.
 ```
 
-Terminé quand : les cinq services affichent OK et `.env` est dans `.gitignore`.
+Terminé quand : Telegram, Claude, OpenAI et Supabase affichent OK et `.env` est dans `.gitignore` (Vapi passe à OK au test téléphonie).
 
 ## Phase 1 — Le bot qui répond
 
@@ -250,23 +261,29 @@ En cas d'échec : motif de fin d'appel dans Vapi, authentifications refusées c�
 ## Phase 2 — La mémoire
 
 ```text
-Lis CLAUDE.md et la section « Conception de la mémoire » de docs/PLAN.md.
-1) Crée sql/schema.sql (tables messages, memories avec vector(1536) et index hnsw, reminders)
-   et applique-le sur Supabase via DATABASE_URL.
-2) app/memory.py :
-   - enregistre chaque message en base ;
-   - après chaque échange, un appel court à claude-haiku-5-5 extrait 0 à 3 faits durables en JSON
-     (type, content) ; jamais de mot de passe, code, numéro de carte ou IBAN ;
-   - chaque fait est comparé aux souvenirs existants (similarité cosinus, embeddings
-     text-embedding-3-small) : au-dessus de 0,90 on met à jour le souvenir, sinon on l'insère ;
-   - search() renvoie les 6 souvenirs les plus proches du message reçu.
-3) Le prompt envoyé à Claude devient : système + profil + préférences + souvenirs trouvés
-   + 20 derniers messages lus en base + message.
-4) Commandes Telegram : /souvenirs, /oublie <texte>, /corrige <ancien> -> <nouveau>.
-Tests : extraction avec et sans fait, dédoublonnage, filtre des données sensibles. Lance-les.
+Lis CLAUDE.md et la section « Conception de la mémoire » de docs/PLAN.md (version révisée).
+1) sql/schema.sql (tables messages, memories, reminders) est déjà appliqué ; ajoute-y une table
+   usage (jour, modèle, tokens d'entrée, de sortie et de cache, coût estimé) et applique-la via DATABASE_URL.
+2) app/db.py : connexion psycopg (pool async) à DATABASE_URL.
+3) app/memory.py :
+   - enregistre chaque message en base ; les 20 derniers sont relus depuis la base au démarrage ;
+   - après chaque échange, en arrière-plan, un appel à claude-haiku-5-5 (sortie JSON validée)
+     reçoit l'échange et les souvenirs existants, et renvoie 0 à 3 opérations
+     ajouter / modifier n° / supprimer n° ; jamais de mot de passe, code, numéro de carte ou IBAN
+     (consigne + filtre dans le code) ;
+   - chaque souvenir ajouté ou modifié reçoit son embedding text-embedding-3-small ;
+   - lecture : tous les souvenirs sous 300, sinon profil + préférences + 8 plus proches.
+4) Le prompt devient : système + bloc souvenirs (mis en cache) + date et heure de Paris
+   + 20 derniers messages + message.
+5) app/usage.py : chaque appel Claude/OpenAI est compté ; au-delà de 1 $ par jour, Marcus
+   prévient et ne répond plus jusqu'au lendemain.
+6) Commandes Telegram : /souvenirs, /oublie <texte>, /corrige <ancien> -> <nouveau>, /couts.
+7) Une requête quotidienne à la base évite la mise en pause de Supabase.
+Tests : opérations d'extraction (ajout, modification, suppression, rien), filtre des données
+sensibles, construction du prompt avec souvenirs, plafond de coût. Lance-les.
 ```
 
-Terminé quand : un fait donné lundi ressort jeudi après un redémarrage ; `/oublie` le supprime ; pas de doublon ; commit « phase 2 : mémoire ».
+Terminé quand : un fait donné lundi ressort jeudi après un redémarrage ; un fait contredit est mis à jour, pas dupliqué ; `/oublie` le supprime ; `/couts` affiche la dépense ; commit « phase 2 : mémoire ».
 
 ## Phase 3 — Les messages vocaux
 
@@ -308,8 +325,10 @@ Phase 5. Ajoute l'outil call_business(numéro, objectif, détails).
    Sans « oui » sous 10 minutes, rien ne part.
 2) Si le restaurant a une réservation en ligne connue, propose d'abord le lien.
 3) Lance l'appel avec l'API Vapi de création d'appel, depuis VAPI_PHONE_NUMBER_ID, avec un
-   assistant défini dans la requête : français, première phrase « Bonjour, je suis l'assistant
-   d'Hugo, j'appelle pour … », objectif et détails, fin d'appel polie, et extraction structurée
+   assistant défini dans la requête : français, première phrase « Bonjour, je suis Marcus,
+   l'assistant IA d'Hugo, j'appelle de sa part pour … Cet appel est enregistré ; dites-le-moi
+   si vous préférez qu'il ne le soit pas. » (si refus : pas d'enregistrement, ou fin d'appel
+   et Hugo prévenu), objectif et détails, fin d'appel polie, et extraction structurée
    du résultat (réservé oui/non, heure confirmée, nom donné, remarques).
 4) Lis l'appel par son ID toutes les 15 secondes jusqu'à la fin, puis envoie le compte rendu à Hugo.
 5) Limites : 5 appels par jour, un seul à la fois.

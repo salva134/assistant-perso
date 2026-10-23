@@ -53,6 +53,19 @@ def test_build_messages_ne_modifie_pas_l_historique():
     assert history == [{"role": "user", "content": "Salut"}]
 
 
+def test_build_messages_date_seulement_dans_le_dernier_message():
+    history = [{"role": "user", "content": "Salut"}, {"role": "assistant", "content": "Salut !"}]
+    messages = llm.build_messages(history, "On est quel jour ?", "jeudi 23 octobre 2026, 19 h 05")
+    assert messages[0]["content"] == "Salut"
+    assert messages[-1]["content"] == "[jeudi 23 octobre 2026, 19 h 05]\nOn est quel jour ?"
+
+
+def test_build_system_met_les_souvenirs_en_cache():
+    system = llm.build_system("CONSIGNES", "SOUVENIRS")
+    assert [b["text"] for b in system] == ["CONSIGNES", "SOUVENIRS"]
+    assert system[-1]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_le_prompt_systeme_presente_marcus():
     prompt = llm.load_system_prompt()
     assert "Marcus" in prompt
