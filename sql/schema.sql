@@ -45,9 +45,28 @@ create table if not exists usage (
 );
 create index if not exists usage_day_idx on usage (day);
 
+-- Appels passés par Marcus (via Vapi)
+create table if not exists calls (
+  id bigserial primary key,
+  vapi_id text,
+  numero text not null,         -- format international (+33…)
+  destinataire text not null,
+  objectif text not null,
+  ouverture text not null,      -- première phrase de Marcus
+  details text not null default '',
+  status text not null default 'en_attente', -- en_attente, annule, en_cours, termine, echec
+  ended_reason text,
+  resume text,
+  transcript text,
+  duree_secondes integer,
+  created_at timestamptz default now(),
+  ended_at timestamptz
+);
+
 -- RLS activé sans aucune politique : la clé publique (anon) ne voit rien,
 -- seul le bot, avec la connexion directe, lit et écrit.
 alter table messages enable row level security;
 alter table memories enable row level security;
 alter table reminders enable row level security;
 alter table usage enable row level security;
+alter table calls enable row level security;

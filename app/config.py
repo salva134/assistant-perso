@@ -32,6 +32,22 @@ class Config:
     timezone: str = "Europe/Paris"
     daily_budget_usd: float = PLAFOND_JOUR_PAR_DEFAUT
     model: str = MODELE
+    # Google Agenda : facultatif, actif seulement si les trois valeurs sont remplies
+    google_client_id: str = field(default="", repr=False)
+    google_client_secret: str = field(default="", repr=False)
+    google_refresh_token: str = field(default="", repr=False)
+
+    # Appels : facultatifs, actifs si la clé Vapi et l'identifiant du numéro sont remplis
+    vapi_api_key: str = field(default="", repr=False)
+    vapi_phone_number_id: str = ""
+
+    @property
+    def calls_enabled(self) -> bool:
+        return bool(self.vapi_api_key and self.vapi_phone_number_id)
+
+    @property
+    def google_enabled(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret and self.google_refresh_token)
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
@@ -61,4 +77,9 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         database_url=env["DATABASE_URL"].strip(),
         timezone=env.get("TIMEZONE", "").strip() or "Europe/Paris",
         daily_budget_usd=plafond_usd,
+        google_client_id=env.get("GOOGLE_CLIENT_ID", "").strip(),
+        google_client_secret=env.get("GOOGLE_CLIENT_SECRET", "").strip(),
+        google_refresh_token=env.get("GOOGLE_REFRESH_TOKEN", "").strip(),
+        vapi_api_key=env.get("VAPI_API_KEY", "").strip(),
+        vapi_phone_number_id=env.get("VAPI_PHONE_NUMBER_ID", "").strip(),
     )

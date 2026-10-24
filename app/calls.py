@@ -1,0 +1,402 @@
+"""Appels téléphoniques passés par Marcus via Vapi (numéro Twilio importé dans Vapi).
+
+Déroulé : Claude prépare l'appel avec l'outil prepare_call → Hugo voit un récapitulatif avec
+deux boutons → « Appeler » lance l'appel → suivi toutes les 15 s → compte rendu sur Telegram.
+"""
+
+import logging
+import math
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+import httpx
+
+from app.llm import Toolbox
+
+logger = logging.getLogger(__name__)
+
+API = "https://api.vapi.ai"
+APPELS_MAX_PAR_JOUR = 5
+VALIDITE_RECAPITULATIF = timedelta(minutes=10)
+INTERVALLE_SUIVI_SECONDES = 15
+DUREE_MAX_APPEL_SECONDES = 500
+
+# Chaîne écoute → réflexion → voix, réglée pour le français.
+# (GPT Realtime a été essayé le 24/10/2026 : accent anglais, phrases coupées.)
+TRANSCRIPTION = {
+    "provider": "deepgram",
+    "model": "nova-3",
+    "language": "fr",
+    # Silence (ms) avant de considérer qu'un morceau de phrase est fini : 10 ms par défaut coupe trop tôt
+    "endpointing": 300,
+}
+# Claude Sonnet 5 : le plus rapide (0,9 s avant le premier mot) et le plus malin d'un comparatif
+# du 24/10/2026 contre GPT-4.1 (1,6 s), GPT-5.5 (1,7 s), GPT-5.6 Terra (1,3 s), Claude Haiku 5.5 (1,0 s).
+# Pas de « temperature » : les modèles Claude récents la refusent.
+MODELE = {"provider": "anthropic", "model": "claude-sonnet-5", "maxTokens": 250}
+# Voix française native de Cartesia ; d'autres sont listées dans VOIX_FRANCAISES
+VOIX_FRANCAISES = {
+    "marc": "ce74c4da-4aee-435d-bc6d-81d1a9367e12",  # Conversational Buddy
+    "fabien": "9d216805-e52e-4b1e-966a-6447df592a5d",  # naturel, chaleureux
+    "henri": "d9f4af15-c402-4f50-bbda-d8823d028d6a",  # naturel, clair
+    "antoine": "0418348a-0ca2-4e90-9986-800fb8b3bbc0",
+}
+# Henri : choisi par Hugo le 24/10/2026 après comparaison de Marc, Fabien et Henri
+VOIX = {"provider": "cartesia", "model": "sonic-3.5", "voiceId": VOIX_FRANCAISES["henri"]}
+# Tour de parole : laisser finir les phrases (adresses, numéros), mais s'arrêter dès qu'on le coupe
+PRISE_DE_PAROLE = {
+    "waitSeconds": 0.6,
+    "smartEndpointingPlan": {"provider": "vapi"},  # recommandé par Vapi hors anglais
+    "transcriptionEndpointingPlan": {
+        "onPunctuationSeconds": 0.3,
+        "onNoPunctuationSeconds": 1.5,
+        "onNumberSeconds": 1.0,
+    },
+}
+INTERRUPTION = {"numWords": 0, "voiceSeconds": 0.25, "backoffSeconds": 1.0}
+
+# Prix Twilio estimés depuis un numéro américain, en dollars par minute entamée
+PRIX_MINUTE_MOBILE = 0.16
+PRIX_MINUTE_FIXE = 0.05
+
+
+class AppelErreur(Exception):
+    pass
+
+
+@dataclass
+class Appel:
+    id: int
+    numero: str
+    destinataire: str
+    objectif: str
+    ouverture: str
+    details: str
+    status: str
+    created_at: datetime
+    vapi_id: str | None = None
+
+
+# --- Numéros ------------------------------------------------------------------------
+
+
+def normalize_number(texte: str) -> str:
+    """« 06 12 34 56 78 », « 0033 6… » ou « +33 6… » → « +33612345678 »."""
+    brut = re.sub(r"[\s.\-()/]", "", texte)
+    if brut.startswith("00"):
+        brut = "+" + brut[2:]
+    elif re.fullmatch(r"0[1-9]\d{8}", brut):
+        brut = "+33" + brut[1:]
+    if not re.fullmatch(r"\+[1-9]\d{6,14}", brut):
+        raise ValueError(f"Numéro de téléphone illisible : « {texte} ».")
+    return brut
+
+
+def format_number(numero: str) -> str:
+    """« +33612345678 » → « 06 12 34 56 78 » pour un numéro français, sinon tel quel."""
+    if re.fullmatch(r"\+33[1-9]\d{8}", numero):
+        local = "0" + numero[3:]
+        return " ".join(local[i : i + 2] for i in range(0, 10, 2))
+    return numero
+
+
+def is_mobile(numero: str) -> bool:
+    return bool(re.match(r"\+33[67]", numero))
+
+
+def estimated_twilio_cost(numero: str, secondes: int) -> float:
+    minutes = max(1, math.ceil(secondes / 60))
+    return minutes * (PRIX_MINUTE_MOBILE if is_mobile(numero) else PRIX_MINUTE_FIXE)
+
+
+# --- Base -------------------------------------------------------------------------------
+
+COLONNES = "id, numero, destinataire, objectif, ouverture, details, status, created_at, vapi_id"
+
+
+async def create_pending(pool, numero, destinataire, objectif, ouverture, details) -> Appel:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            f"insert into calls (numero, destinataire, objectif, ouverture, details)"
+            f" values (%s, %s, %s, %s, %s) returning {COLONNES}",
+            (numero, destinataire, objectif, ouverture, details),
+        )
+        return Appel(*await cur.fetchone())
+
+
+async def get(pool, call_id: int) -> Appel | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute(f"select {COLONNES} from calls where id = %s", (call_id,))
+        row = await cur.fetchone()
+    return Appel(*row) if row else None
+
+
+async def set_status(pool, call_id: int, status: str, vapi_id: str | None = None) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "update calls set status = %s, vapi_id = coalesce(%s, vapi_id) where id = %s",
+            (status, vapi_id, call_id),
+        )
+
+
+async def finish(pool, call_id, status, ended_reason, resume, transcript, duree) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(
+            "update calls set status = %s, ended_reason = %s, resume = %s, transcript = %s,"
+            " duree_secondes = %s, ended_at = now() where id = %s",
+            (status, ended_reason, resume, transcript, duree, call_id),
+        )
+
+
+async def count_today(pool) -> int:
+    """Appels réellement lancés aujourd'hui (heure de Paris)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "select count(*) from calls where status in ('en_cours', 'termine', 'echec')"
+            " and (created_at at time zone 'Europe/Paris')::date = (now() at time zone 'Europe/Paris')::date"
+        )
+        return (await cur.fetchone())[0]
+
+
+async def in_progress(pool) -> list[Appel]:
+    async with pool.connection() as conn:
+        cur = await conn.execute(f"select {COLONNES} from calls where status = 'en_cours' order by id")
+        return [Appel(*row) for row in await cur.fetchall()]
+
+
+async def purge_old_transcripts(pool) -> None:
+    """Les transcriptions contiennent les propos d'autres personnes : effacées après 7 jours."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            "update calls set transcript = null where transcript is not null"
+            " and created_at < now() - interval '7 days'"
+        )
+
+
+# --- Assistant vocal ---------------------------------------------------------------
+
+
+def first_message(ouverture: str) -> str:
+    return f"Bonjour, c'est Marcus, l'assistant IA d'Hugo. {ouverture.strip()}"
+
+
+def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX) -> dict:
+    """memoire : ce que Marcus sait d'Hugo (souvenirs), pour répondre et prendre les devants."""
+    consignes = (
+        f"Tu es Marcus, l'assistant IA d'Hugo, et tu téléphones de sa part à : {appel.destinataire}.\n"
+        f"But de l'appel : {appel.objectif}\n"
+        f"Précisions d'Hugo pour cet appel : {appel.details or 'aucune.'}\n\n"
+        f"{memoire or 'Tu ne sais rien de plus sur Hugo.'}\n\n"
+        "Comment parler : en français de tous les jours, comme une personne sympathique et détendue "
+        "au téléphone. Phrases courtes, une idée à la fois, avec des mots simples (« d'accord », "
+        "« parfait », « super, merci »). Écoute vraiment ce qu'on te dit et réponds à ça, pas à un "
+        "script. Si on te coupe la parole, arrête-toi et écoute. Ne répète jamais ta présentation. "
+        "Une chose à la fois, comme une vraie personne : dis d'abord ce que tu veux en une phrase, "
+        "puis donne les détails (adresse, heure, paiement…) quand on te les demande, ou un par un. "
+        "Ne déballe jamais tout d'un coup. "
+        "Écris tous les nombres en toutes lettres, comme on les dit à l'oral : heures (« vingt heures »), "
+        "prix (« vingt-cinq euros cinquante »), code postal (« treize mille quatre cents »), numéro de "
+        "rue (« deux cent quarante-cinq »), téléphone deux chiffres par deux (« zéro six, douze, trente-quatre… »).\n\n"
+        "Prends les devants avec ce que tu sais d'Hugo : s'il y a une question dont la réponse est dans "
+        "sa mémoire ou découle de ses habitudes (son adresse, ses goûts, ses allergies, l'heure qu'il "
+        "préfère, le nom pour la commande), réponds directement, sans dire que tu dois vérifier. "
+        "Tu peux aussi proposer de toi-même ce qui l'arrangerait. Ne donne que ce qui sert à cet appel.\n\n"
+        "Les questions imprévues :\n"
+        "- Petit choix de tous les jours (sauce, boisson, couverts, sur place ou à emporter) : "
+        "décide avec bon sens, selon ses goûts si tu les connais. Par exemple « Oui, une sauce "
+        "pimentée, volontiers » ou « Non merci, ça ira ».\n"
+        "- Décision importante qui n'est ni dans la demande ni dans sa mémoire (prix nettement plus "
+        "élevé, autre jour, acompte) : dis gentiment que tu vérifies avec Hugo et qu'il reviendra vers eux.\n"
+        "- N'invente jamais un fait sur Hugo (adresse, numéro, nom) que tu ne connais pas.\n\n"
+        "Pour finir : récapitule en une phrase ce qui est convenu, remercie, dis au revoir et "
+        "raccroche. Si tu tombes sur un répondeur, laisse un message court avec le but de l'appel, "
+        "puis raccroche."
+    )
+    return {
+        "name": "Marcus appel",
+        "firstMessage": first_message(appel.ouverture),
+        "model": {**MODELE, "messages": [{"role": "system", "content": consignes}]},
+        "voice": voix,
+        "transcriber": TRANSCRIPTION,
+        "startSpeakingPlan": PRISE_DE_PAROLE,
+        "stopSpeakingPlan": INTERRUPTION,
+        "backgroundDenoisingEnabled": True,
+        "endCallFunctionEnabled": True,
+        "maxDurationSeconds": DUREE_MAX_APPEL_SECONDES,
+        # Seule la transcription sert au compte rendu : pas d'enregistrement audio
+        "artifactPlan": {"recordingEnabled": False},
+    }
+
+
+class VapiClient:
+    def __init__(self, api_key: str, phone_number_id: str):
+        self._headers = {"Authorization": f"Bearer {api_key}"}
+        self.phone_number_id = phone_number_id
+        self._http = httpx.AsyncClient(timeout=30)
+
+    async def start(self, appel: Appel, memoire: str = "") -> str:
+        r = await self._http.post(
+            f"{API}/call",
+            headers=self._headers,
+            json={
+                "phoneNumberId": self.phone_number_id,
+                "customer": {"number": appel.numero, "name": appel.destinataire[:40]},
+                "assistant": build_assistant(appel, memoire),
+            },
+        )
+        if r.status_code >= 300:
+            logger.error("Vapi a refusé l'appel : %s", r.text[:300])
+            raise AppelErreur(f"Vapi a refusé l'appel ({r.status_code}).")
+        return r.json()["id"]
+
+    async def get(self, vapi_id: str) -> dict:
+        r = await self._http.get(f"{API}/call/{vapi_id}", headers=self._headers)
+        r.raise_for_status()
+        return r.json()
+
+
+def call_duration(data: dict) -> int:
+    debut, fin = data.get("startedAt"), data.get("endedAt")
+    if not debut or not fin:
+        return 0
+    d = datetime.fromisoformat(debut.replace("Z", "+00:00"))
+    f = datetime.fromisoformat(fin.replace("Z", "+00:00"))
+    return max(0, round((f - d).total_seconds()))
+
+
+def call_transcript(data: dict) -> str:
+    return ((data.get("artifact") or {}).get("transcript") or data.get("transcript") or "").strip()
+
+
+# Raisons de fin qui veulent dire que personne n'a vraiment parlé avec Marcus
+FINS_SANS_CONVERSATION = {
+    "customer-did-not-answer": "personne n'a décroché",
+    "customer-busy": "la ligne était occupée",
+    "voicemail": "je suis tombé sur le répondeur",
+    "twilio-failed-to-connect-call": "l'appel n'a pas pu aboutir",
+}
+
+
+def explain_end(reason: str | None) -> str | None:
+    if not reason:
+        return None
+    if reason in FINS_SANS_CONVERSATION:
+        return FINS_SANS_CONVERSATION[reason]
+    if "error" in reason:
+        return f"l'appel a échoué ({reason})"
+    return None
+
+
+# --- Messages pour Hugo ---------------------------------------------------------------
+
+
+def format_recap(appel: Appel) -> str:
+    lignes = [
+        "📞 Appel prêt — je n'appelle qu'après ta validation.",
+        "",
+        f"👤 {appel.destinataire}",
+        f"☎️ {format_number(appel.numero)}",
+        f"🎯 {appel.objectif}",
+        f"🗣 Je commencerai par : « {first_message(appel.ouverture)} »",
+    ]
+    if appel.details:
+        lignes.append(f"ℹ️ Infos que je peux donner : {appel.details}")
+    return "\n".join(lignes)
+
+
+def format_report(appel: Appel, duree: int, resume: str, transcript: str) -> str:
+    minutes, secondes = divmod(duree, 60)
+    texte = (
+        f"📞 Appel terminé — {appel.destinataire} ({format_number(appel.numero)})\n"
+        f"⏱ {minutes} min {secondes:02d} s\n\n{resume}"
+    )
+    if transcript:
+        texte += f"\n\n📝 Transcription :\n{transcript}"
+    return texte
+
+
+SYSTEME_COMPTE_RENDU = (
+    "Tu rédiges pour Hugo le compte rendu d'un appel que son assistant Marcus a passé pour lui. "
+    "En français, 2 à 4 lignes, sans formule de politesse : l'objectif est-il atteint, ce qui a été "
+    "convenu (heure, nombre de personnes, prix…), et ce qu'Hugo doit éventuellement faire ensuite. "
+    "Ne t'appuie que sur la transcription. Texte simple, sans mise en forme (pas d'astérisques), "
+    "car le message s'affiche tel quel sur Telegram."
+)
+
+
+async def summarize(claude, model: str, appel: Appel, transcript: str, on_response=None) -> str:
+    response = await claude.messages.create(
+        model=model,
+        max_tokens=1024,
+        system=SYSTEME_COMPTE_RENDU,
+        messages=[{
+            "role": "user",
+            "content": f"Objectif de l'appel : {appel.objectif}\n\nTranscription :\n{transcript}",
+        }],
+        output_config={"effort": "low"},
+    )
+    if on_response:
+        await on_response(response)
+    return "".join(b.text for b in response.content if b.type == "text").strip()
+
+
+# --- Outil pour Claude --------------------------------------------------------------------
+
+DEFINITION = {
+    "name": "prepare_call",
+    "description": (
+        "Prépare un appel téléphonique que Marcus passera lui-même pour Hugo (un proche, un "
+        "restaurant, un commerce…). L'appel ne part pas tout de suite : Hugo reçoit un récapitulatif "
+        "et le valide avec un bouton. Si tu ne connais pas le numéro, demande-le à Hugo avant."
+    ),
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "numero": {"type": "string", "description": "Numéro à appeler, par exemple 06 12 34 56 78."},
+            "destinataire": {"type": "string", "description": "Qui on appelle, par exemple « Maman » ou « Pizzeria Luigi »."},
+            "objectif": {"type": "string", "description": "Ce que l'appel doit obtenir ou transmettre, en une phrase."},
+            "ouverture": {
+                "type": "string",
+                "description": "Phrase dite juste après « Bonjour, c'est Marcus, l'assistant IA d'Hugo. », "
+                "par exemple « J'appelle de sa part pour réserver une table ce soir. »",
+            },
+            "details": {
+                "type": "string",
+                "description": "Informations utiles que Marcus peut donner (nombre de personnes, horaires, "
+                "nom de réservation…), ou une chaîne vide.",
+            },
+        },
+        "required": ["numero", "destinataire", "objectif", "ouverture", "details"],
+        "additionalProperties": False,
+    },
+}
+
+
+def add_tools(toolbox: Toolbox, pool, on_prepared) -> None:
+    """on_prepared(appel) est appelé quand un appel attend la validation d'Hugo (envoi des boutons)."""
+
+    async def prepare_call(entree: dict) -> str:
+        numero = normalize_number(entree["numero"])
+        if await count_today(pool) >= APPELS_MAX_PAR_JOUR:
+            raise ValueError(f"Limite de {APPELS_MAX_PAR_JOUR} appels par jour atteinte.")
+        appel = await create_pending(
+            pool,
+            numero,
+            entree["destinataire"].strip() or format_number(numero),
+            entree["objectif"].strip(),
+            entree["ouverture"].strip(),
+            entree["details"].strip(),
+        )
+        await on_prepared(appel)
+        return (
+            f"Récapitulatif de l'appel n°{appel.id} envoyé à Hugo avec les boutons Appeler / Annuler. "
+            "L'appel ne partira que s'il clique sur Appeler : ne dis pas qu'il est lancé."
+        )
+
+    toolbox.add(DEFINITION, prepare_call)
+
+
+def is_expired(appel: Appel) -> bool:
+    return datetime.now(timezone.utc) - appel.created_at > VALIDITE_RECAPITULATIF

@@ -34,7 +34,10 @@ Pour passer un jour sur un serveur Linux : `.\deploy\deploy.ps1 -Serveur <IP> -P
 - `/souvenirs` : ce que Marcus sait de toi, numéroté
 - `/oublie <numéro ou texte>` : efface un souvenir
 - `/corrige <numéro ou texte> -> <nouveau texte>` : corrige un souvenir
-- `/couts` : dépense du jour et du mois (plafond : `DAILY_BUDGET_USD`, 1 $ par défaut)
+- `/couts` : dépense du jour et du mois (plafond : `DAILY_BUDGET_USD`, 1 $ par défaut, 10 $ dans le .env)
+- `/rappels` : rappels en attente
+
+En langage naturel : « rappelle-moi demain 9 h de… », « qu'est-ce que j'ai jeudi ? » (Google Agenda, une fois `scripts/google_auth.py` passé), « appelle ma mère pour lui dire… » (récapitulatif, bouton ✅ Appeler, compte rendu à la fin). Point du matin à 7 h 30.
 
 ## Structure
 
@@ -43,6 +46,9 @@ Pour passer un jour sur un serveur Linux : `.\deploy\deploy.ps1 -Serveur <IP> -P
 - `app/memory.py` : messages, souvenirs, extraction après chaque échange
 - `app/usage.py` : journal des coûts et plafond quotidien
 - `app/voice.py` : transcription des vocaux (5 minutes au maximum)
+- `app/reminders.py`, `app/brief.py` : rappels et point du matin
+- `app/calendar_google.py` : Google Agenda (`scripts/google_auth.py` pour l'autorisation)
+- `app/calls.py`, `app/calls_bot.py` : appels via Vapi et numéro Twilio, validation par bouton, compte rendu
 - `app/config.py`, `app/db.py`, `app/dates.py` : configuration, base, dates
 - `prompts/` : personnalité de Marcus et consignes de mémoire
 - `sql/schema.sql` : tables `messages`, `memories`, `reminders`, `usage`

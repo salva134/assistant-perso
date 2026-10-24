@@ -16,6 +16,7 @@ from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -23,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import dates, llm, memory, usage, voice
+from app import brief, calendar_google, calls, calls_bot, dates, llm, memory, reminders, usage, voice
 from app.backup import backup
 from app.config import load_config
 from app.db import make_pool
@@ -177,6 +178,7 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
             user_text,
             now_text=dates.format_now(dates.now(config.timezone)),
             on_response=lambda r: usage.record_claude(pool, r),
+            toolbox=data["toolbox"],
         )
         # L'échange n'entre en base qu'une fois la réponse obtenue
         source_id = await memory.save_message(pool, "user", user_text)
@@ -260,6 +262,38 @@ async def on_couts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def on_rappels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = context.bot_data
+    rappels = await reminders.pending(data["pool"])
+    texte = reminders.format_list(rappels, data["config"].timezone)
+    if rappels:
+        texte += "\n\nPour en annuler un, dis-moi simplement « annule le rappel n°… »."
+    await send_long(update, texte)
+
+
+async def morning_brief(context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = context.bot_data
+    tz = data["config"].timezone
+    try:
+        maintenant = dates.now(tz)
+        du_jour = brief.todays(await reminders.pending(data["pool"]), maintenant, tz)
+        agenda_du_jour = None
+        if data["agenda"] is not None:
+            try:
+                evenements = await data["agenda"].events_of_day(maintenant.date())
+                agenda_du_jour = calendar_google.format_events(evenements, tz)
+            except Exception:
+                logger.exception("Agenda indisponible pour le point du matin")
+                agenda_du_jour = "(agenda indisponible ce matin)"
+        await context.bot.send_message(
+            data["config"].allowed_user_id,
+            brief.format_brief(maintenant, du_jour, tz, agenda_du_jour),
+        )
+    except Exception:
+        logger.exception("Échec du point du matin")
+        await record_failure(context, "point du matin")
+
+
 async def on_unsupported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Je comprends le texte et les vocaux, pas encore les photos ni les fichiers.")
 
@@ -289,11 +323,17 @@ COMMANDES = [
     ("oublie", "Effacer un souvenir : /oublie <numéro ou texte>"),
     ("corrige", "Corriger un souvenir : /corrige <ancien> -> <nouveau>"),
     ("couts", "Dépense du jour et du mois"),
+    ("rappels", "Rappels en attente"),
 ]
 
 
 async def post_init(app: Application) -> None:
     await app.bot_data["pool"].open(wait=True, timeout=15)
+    # Les rappels vivent en base : on les replanifie à chaque démarrage
+    nombre = await reminders.reload_all(app.bot_data["pool"], app.job_queue)
+    logger.info("%d rappel(s) en attente replanifié(s)", nombre)
+    if app.bot_data["config"].calls_enabled:
+        logger.info("%d appel(s) en cours repris", await calls_bot.resume_following(app))
     # Menu « / » dans Telegram
     await app.bot.set_my_commands(COMMANDES)
 
@@ -322,12 +362,29 @@ def build_application() -> Application:
         system_prompt=llm.load_system_prompt(),
         learn_lock=asyncio.Lock(),
     )
+    toolbox = llm.Toolbox()
+    reminders.add_tools(toolbox, pool, app.job_queue, config.timezone)
+    agenda = None
+    if config.google_enabled:
+        agenda = calendar_google.GoogleCalendar(
+            config.google_client_id,
+            config.google_client_secret,
+            config.google_refresh_token,
+            config.timezone,
+        )
+        calendar_google.add_tools(toolbox, agenda)
+    if config.calls_enabled:
+        app.bot_data["vapi"] = calls.VapiClient(config.vapi_api_key, config.vapi_phone_number_id)
+        calls.add_tools(toolbox, pool, calls_bot.make_on_prepared(app))
+        app.add_handler(CallbackQueryHandler(calls_bot.on_button, pattern=r"^appel:"))
+    app.bot_data.update(toolbox=toolbox, agenda=agenda)
     app.add_handler(TypeHandler(Update, guard), group=-1)
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("souvenirs", on_souvenirs))
     app.add_handler(CommandHandler("oublie", on_oublie))
     app.add_handler(CommandHandler("corrige", on_corrige))
     app.add_handler(CommandHandler("couts", on_couts))
+    app.add_handler(CommandHandler("rappels", on_rappels))
     app.add_handler(
         MessageHandler(filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND, on_text)
     )
@@ -336,6 +393,9 @@ def build_application() -> Application:
     app.add_error_handler(on_error)
     fuseau = ZoneInfo(config.timezone)
     app.job_queue.run_daily(keep_database_awake, time=datetime.time(4, 0, tzinfo=fuseau))
+    app.job_queue.run_daily(morning_brief, time=datetime.time(7, 30, tzinfo=fuseau))
+    if config.calls_enabled:
+        app.job_queue.run_daily(calls_bot.purge_job, time=datetime.time(4, 15, tzinfo=fuseau))
     # Sur le PC, Marcus fait lui-même sa sauvegarde du dimanche (sur un serveur, c'est systemd)
     if os.environ.get("BACKUP_DIR"):
         # days : 0 = dimanche pour python-telegram-bot

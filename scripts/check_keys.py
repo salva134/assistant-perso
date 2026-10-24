@@ -130,11 +130,41 @@ def test_vapi() -> tuple[str, str]:
     return OK, f"{len(r.json())} assistant(s)"
 
 
+def test_google() -> tuple[str, str]:
+    import httpx
+
+    noms = ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN")
+    manquantes = [n for n in noms if not env(n)]
+    if manquantes:
+        return MANQUE, ", ".join(manquantes) + " vide (scripts/google_auth.py)"
+    r = httpx.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "client_id": env("GOOGLE_CLIENT_ID"),
+            "client_secret": env("GOOGLE_CLIENT_SECRET"),
+            "refresh_token": env("GOOGLE_REFRESH_TOKEN"),
+            "grant_type": "refresh_token",
+        },
+        timeout=10,
+    )
+    if r.status_code != 200:
+        return ECHEC, f"jeton refusé ({r.json().get('error', r.status_code)}) : relancer scripts/google_auth.py"
+    r = httpx.get(
+        "https://www.googleapis.com/calendar/v3/calendars/primary",
+        headers={"Authorization": f"Bearer {r.json()['access_token']}"},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        return ECHEC, f"agenda inaccessible (HTTP {r.status_code})"
+    return OK, f"agenda « {r.json().get('summary', 'principal')} »"
+
+
 TESTS = {
     "Telegram": test_telegram,
     "Claude": test_claude,
     "OpenAI": test_openai,
     "Supabase": test_supabase,
+    "Google": test_google,
     "Vapi": test_vapi,
 }
 

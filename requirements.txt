@@ -6,4 +6,5 @@ psycopg-pool>=3.2
 python-dotenv>=1.0
 httpx>=0.27
 tzdata             # fuseaux horaires sous Windows (Europe/Paris)
+google-auth-oauthlib>=1.2   # uniquement pour scripts/google_auth.py
 pytest>=8.0

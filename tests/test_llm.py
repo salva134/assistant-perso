@@ -83,18 +83,19 @@ def test_reply_envoie_systeme_modele_et_renvoie_le_texte():
     assert "tools" not in requete  # aucun outil en phase 1
 
 
-def test_reply_execute_un_outil_puis_renvoie_la_reponse(monkeypatch):
+def test_reply_execute_un_outil_puis_renvoie_la_reponse():
     async def heure(_entree):
         return "20 h 15"
 
-    monkeypatch.setattr(llm, "TOOLS", [{"name": "heure", "input_schema": {"type": "object"}}])
-    monkeypatch.setattr(llm, "TOOL_HANDLERS", {"heure": heure})
+    toolbox = llm.Toolbox()
+    toolbox.add({"name": "heure", "input_schema": {"type": "object"}}, heure)
     appel = SimpleNamespace(type="tool_use", id="t1", name="heure", input={})
     client = FauxClient(reponse("tool_use", appel), reponse("end_turn", texte("Il est 20 h 15.")))
 
-    resultat = asyncio.run(llm.reply(client, "m", "s", [], "Quelle heure ?"))
+    resultat = asyncio.run(llm.reply(client, "m", "s", [], "Quelle heure ?", toolbox=toolbox))
 
     assert resultat == "Il est 20 h 15."
+    assert client.requetes[0]["tools"] == [{"name": "heure", "input_schema": {"type": "object"}}]
     deuxieme = client.requetes[1]["messages"]
     assert deuxieme[-1] == {
         "role": "user",
@@ -102,8 +103,7 @@ def test_reply_execute_un_outil_puis_renvoie_la_reponse(monkeypatch):
     }
 
 
-def test_reply_signale_un_outil_inconnu(monkeypatch):
-    monkeypatch.setattr(llm, "TOOLS", [{"name": "x"}])
+def test_reply_signale_un_outil_inconnu():
     appel = SimpleNamespace(type="tool_use", id="t1", name="inexistant", input={})
     client = FauxClient(reponse("tool_use", appel), reponse("end_turn", texte("ok")))
     asyncio.run(llm.reply(client, "m", "s", [], "?"))
@@ -111,8 +111,21 @@ def test_reply_signale_un_outil_inconnu(monkeypatch):
     assert resultat_outil["is_error"] is True
 
 
-def test_reply_s_arrete_apres_trop_de_tours(monkeypatch):
-    monkeypatch.setattr(llm, "TOOLS", [{"name": "x"}])
+def test_reply_transmet_l_erreur_d_un_outil_au_modele():
+    async def echoue(_entree):
+        raise ValueError("Cette date est déjà passée.")
+
+    toolbox = llm.Toolbox()
+    toolbox.add({"name": "x"}, echoue)
+    appel = SimpleNamespace(type="tool_use", id="t1", name="x", input={})
+    client = FauxClient(reponse("tool_use", appel), reponse("end_turn", texte("ok")))
+    asyncio.run(llm.reply(client, "m", "s", [], "?", toolbox=toolbox))
+    resultat_outil = client.requetes[1]["messages"][-1]["content"][0]
+    assert resultat_outil["is_error"] is True
+    assert "déjà passée" in resultat_outil["content"]
+
+
+def test_reply_s_arrete_apres_trop_de_tours():
     appel = SimpleNamespace(type="tool_use", id="t", name="x", input={})
     client = FauxClient(*[reponse("tool_use", appel)] * llm.MAX_TOURS_OUTILS)
     resultat = asyncio.run(llm.reply(client, "m", "s", [], "?"))

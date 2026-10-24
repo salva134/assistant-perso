@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import anthropic
@@ -13,11 +14,20 @@ MAX_TOKENS = 4096
 # Garde-fou : une boucle d'outils qui ne s'arrête pas coûterait cher
 MAX_TOURS_OUTILS = 5
 
-# Outils proposés au modèle. Vide en phase 1 ; chaque phase en ajoutera
-# (rappels, agenda, appels). TOOLS contient les définitions envoyées à l'API,
-# TOOL_HANDLERS associe chaque nom d'outil à une fonction async qui renvoie du texte.
-TOOLS: list[dict] = []
-TOOL_HANDLERS: dict[str, Callable[[dict], Awaitable[str]]] = {}
+Handler = Callable[[dict], Awaitable[str]]
+
+
+@dataclass
+class Toolbox:
+    """Outils proposés au modèle : définitions envoyées à l'API, et pour chaque nom
+    la fonction async qui l'exécute et renvoie du texte (une exception = erreur pour le modèle)."""
+
+    definitions: list[dict] = field(default_factory=list)
+    handlers: dict[str, Handler] = field(default_factory=dict)
+
+    def add(self, definition: dict, handler: Handler) -> None:
+        self.definitions.append(definition)
+        self.handlers[definition["name"]] = handler
 
 
 def load_system_prompt(path: Path = PROMPT_SYSTEME) -> str:
@@ -48,8 +58,8 @@ def build_messages(history: Sequence[dict], user_text: str, now_text: str | None
     return messages
 
 
-async def run_tool(block) -> dict:
-    handler = TOOL_HANDLERS.get(block.name)
+async def run_tool(block, toolbox: Toolbox) -> dict:
+    handler = toolbox.handlers.get(block.name)
     if handler is None:
         return {
             "type": "tool_result",
@@ -78,11 +88,13 @@ async def reply(
     user_text: str,
     now_text: str | None = None,
     on_response: Callable[[object], Awaitable[None]] | None = None,
+    toolbox: Toolbox | None = None,
 ) -> str:
     """Envoie le message à Claude, exécute les outils demandés, renvoie le texte final.
 
     on_response est appelé après chaque réponse de l'API (journal des coûts).
     """
+    toolbox = toolbox or Toolbox()
     messages = build_messages(history, user_text, now_text)
     params = {
         "model": model,
@@ -91,8 +103,8 @@ async def reply(
         # Effort bas : réponses rapides pour une discussion de tous les jours
         "output_config": {"effort": "low"},
     }
-    if TOOLS:
-        params["tools"] = TOOLS
+    if toolbox.definitions:
+        params["tools"] = toolbox.definitions
 
     for _ in range(MAX_TOURS_OUTILS):
         response = await client.messages.create(messages=messages, **params)
@@ -102,7 +114,7 @@ async def reply(
             break
         # La réponse complète (avec les blocs tool_use) repart telle quelle
         messages.append({"role": "assistant", "content": response.content})
-        resultats = [await run_tool(b) for b in response.content if b.type == "tool_use"]
+        resultats = [await run_tool(b, toolbox) for b in response.content if b.type == "tool_use"]
         messages.append({"role": "user", "content": resultats})
     else:
         logger.warning("Boucle d'outils arrêtée après %d tours", MAX_TOURS_OUTILS)

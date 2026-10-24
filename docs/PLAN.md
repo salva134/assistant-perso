@@ -24,7 +24,8 @@ Construire un assistant personnel, réservé à Hugo, qui se souvient de lui et 
 | V3 | Appeler un commerce à la place d'Hugo (réservation, commande à emporter) et faire un compte rendu ; envoyer le lien de réservation en ligne quand il existe | 5 |
 | Socle | Tourner 24 h/24 sur un serveur, avec sauvegardes | 6 |
 
-Hors périmètre : partager l'assistant avec d'autres personnes, payer à la place d'Hugo, appeler des particuliers.
+Hors périmètre : partager l'assistant avec d'autres personnes, payer à la place d'Hugo.
+Appels (décision d'Hugo, 23/10/2026) : Marcus appelle les numéros qu'Hugo lui demande d'appeler, commerces comme proches (« appelle ma mère pour lui dire que je mange au resto »), après sa confirmation.
 
 ## Architecture
 
@@ -129,9 +130,10 @@ Ordre révisé le 23/10/2026 (voir la révision en haut) ; les numéros de phase
 3. Phase 2 — Mémoire, journal des coûts ✅
 4. Phase 3 — Vocaux → la V1 est complète ✅
 5. Phase 6 — Mise en production ✅ sur le PC (23/10/2026) : Hugo garde son PC allumé en permanence (veille désactivée) plutôt que de payer un VPS. Une tâche planifiée Windows lance Marcus au démarrage, le relance s'il plante et prévient Hugo ; sauvegarde chaque dimanche dans `backups/`. Les fichiers VPS (`deploy/`) restent prêts : `.\deploy\deploy.ps1 -Serveur <IP> -Premiere`.
-6. Phase 4 — Rappels, Google Agenda, point du matin
-7. Test téléphonie — OVHcloud branché sur Vapi, après 2 semaines d'usage de la V1
-8. Phase 5 — Appels sortants
+6. Phase 4 — Rappels ✅, point du matin ✅, Google Agenda (code prêt, autorisation Google à finir)
+7. Test téléphonie ✅ (24/10/2026) — avec un numéro Twilio américain (+1 775 637 1413) importé dans Vapi, plutôt qu'OVHcloud (commande d'abord refusée, puis en attente du délai de rétractation). Twilio exige l'Upgrade et un profil Trust Hub approuvé pour appeler la France. Le numéro s'affiche bien chez le destinataire.
+8. Phase 5 — Appels sortants vers les numéros qu'Hugo choisit ✅ : outil prepare_call, boutons Appeler / Annuler, suivi toutes les 15 s, compte rendu par Haiku, 5 appels par jour, un à la fois, pas d'enregistrement audio, transcriptions effacées après 7 jours. Toute la mémoire d'Hugo accompagne l'appel pour que Marcus prenne les devants.
+   Réglages retenus après essais : écoute Deepgram nova-3 en français ; Claude Sonnet 5 (le plus rapide et le plus malin face à GPT-4.1, GPT-5.5, GPT-5.6 Terra et Claude Haiku 5.5) ; voix Cartesia « Henri » choisie par Hugo. Écartés : Azure (trop robotique), GPT Realtime (accent anglais, phrases coupées).
 
 ---
 
