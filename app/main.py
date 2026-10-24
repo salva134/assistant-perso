@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import brief, calendar_google, calls, calls_bot, dates, llm, memory, reminders, usage, voice
+from app import brief, calendar_google, calls, calls_bot, dates, hotline, llm, memory, reminders, usage, voice
 from app.backup import backup
 from app.config import load_config
 from app.db import make_pool
@@ -126,6 +126,10 @@ async def over_budget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Pendant un appel, Marcus attend peut-être la réponse d'Hugo à une question
+    if hotline.answer(context.bot_data, update.message.text):
+        await update.message.reply_text(f"✅ Je lui réponds : « {update.message.text.strip()} ».")
+        return
     try:
         if await over_budget(update, context):
             return
@@ -157,6 +161,9 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not texte:
         await update.message.reply_text("Je n'ai rien entendu dans ce vocal.")
+        return
+    if hotline.answer(data, texte):
+        await update.message.reply_text(f"🎤 « {texte} »\n\n✅ Je lui réponds ça.")
         return
     # Hugo voit ce que Marcus a compris, puis la réponse
     await answer(update, context, texte, entete=f"🎤 « {texte} »\n\n")
@@ -347,11 +354,22 @@ async def post_init(app: Application) -> None:
     logger.info("%d rappel(s) en attente replanifié(s)", nombre)
     if app.bot_data["config"].calls_enabled:
         logger.info("%d appel(s) en cours repris", await calls_bot.resume_following(app))
+        # Ligne directe : Vapi peut poser une question à Hugo pendant un appel (tunnel Cloudflare)
+        try:
+            app.bot_data["ligne"] = await hotline.start(calls_bot.make_tool_answerer(app))
+        except Exception:
+            logger.exception("Ligne directe non ouverte")
+        try:
+            await calls_bot.refresh_inbound(app.bot_data)
+            logger.info("Assistant d'accueil en place sur le numéro de Marcus")
+        except Exception:
+            logger.exception("Assistant d'accueil non mis en place")
     # Menu « / » dans Telegram
     await app.bot.set_my_commands(COMMANDES)
 
 
 async def post_shutdown(app: Application) -> None:
+    await hotline.stop(app.bot_data.get("ligne"))
     await app.bot_data["pool"].close()
 
 
@@ -402,6 +420,7 @@ def build_application() -> Application:
         app.bot_data["vapi"] = calls.VapiClient(config.vapi_api_key, config.vapi_phone_number_id)
         calls.add_tools(toolbox, pool, calls_bot.make_on_prepared(app))
         app.add_handler(CallbackQueryHandler(calls_bot.on_button, pattern=r"^appel:"))
+        app.add_handler(CallbackQueryHandler(calls_bot.on_question_button, pattern=r"^question:"))
     app.bot_data.update(toolbox=toolbox, agenda=agenda)
     app.add_handler(TypeHandler(Update, guard), group=-1)
     app.add_handler(CommandHandler("start", on_start))
@@ -421,6 +440,9 @@ def build_application() -> Application:
     app.job_queue.run_daily(morning_brief, time=datetime.time(7, 30, tzinfo=fuseau))
     if config.calls_enabled:
         app.job_queue.run_daily(calls_bot.purge_job, time=datetime.time(4, 15, tzinfo=fuseau))
+        # Appels reçus : vérifiés chaque minute ; accueil remis à jour chaque heure (mémoire qui évolue)
+        app.job_queue.run_repeating(calls_bot.inbound_job, interval=60, first=30)
+        app.job_queue.run_repeating(calls_bot.refresh_inbound_job, interval=3600, first=3600)
     # Sur le PC, Marcus fait lui-même sa sauvegarde du dimanche (sur un serveur, c'est systemd)
     if os.environ.get("BACKUP_DIR"):
         # days : 0 = dimanche pour python-telegram-bot

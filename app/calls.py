@@ -9,6 +9,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -55,6 +56,17 @@ PRISE_DE_PAROLE = {
     },
 }
 INTERRUPTION = {"numWords": 0, "voiceSeconds": 0.25, "backoffSeconds": 1.0}
+
+# Façon de parler commune aux appels passés et reçus
+STYLE_ORAL = (
+    "Comment parler : en français de tous les jours, comme une personne sympathique et détendue "
+    "au téléphone. Phrases courtes, une idée à la fois, avec des mots simples (« d'accord », "
+    "« parfait », « super, merci »). Écoute vraiment ce qu'on te dit et réponds à ça, pas à un "
+    "script. Si on te coupe la parole, arrête-toi et écoute. Ne répète jamais ta présentation. "
+    "Écris tous les nombres en toutes lettres, comme on les dit à l'oral : heures (« vingt heures »), "
+    "prix (« vingt-cinq euros cinquante »), code postal (« treize mille quatre cents »), numéro de "
+    "rue (« deux cent quarante-cinq »), téléphone deux chiffres par deux (« zéro six, douze, trente-quatre… »)."
+)
 
 # Prix Twilio estimés depuis un numéro américain, en dollars par minute entamée
 PRIX_MINUTE_MOBILE = 0.16
@@ -161,10 +173,10 @@ async def finish(pool, call_id, status, ended_reason, resume, transcript, duree)
 
 
 async def count_today(pool) -> int:
-    """Appels réellement lancés aujourd'hui (heure de Paris)."""
+    """Appels réellement lancés par Marcus aujourd'hui (heure de Paris)."""
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "select count(*) from calls where status in ('en_cours', 'termine', 'echec')"
+            "select count(*) from calls where direction = 'sortant' and status in ('en_cours', 'termine', 'echec')"
             " and (created_at at time zone 'Europe/Paris')::date = (now() at time zone 'Europe/Paris')::date"
         )
         return (await cur.fetchone())[0]
@@ -172,8 +184,69 @@ async def count_today(pool) -> int:
 
 async def in_progress(pool) -> list[Appel]:
     async with pool.connection() as conn:
-        cur = await conn.execute(f"select {COLONNES} from calls where status = 'en_cours' order by id")
+        cur = await conn.execute(
+            f"select {COLONNES} from calls where direction = 'sortant' and status = 'en_cours' order by id"
+        )
         return [Appel(*row) for row in await cur.fetchall()]
+
+
+@dataclass(frozen=True)
+class AppelRecent:
+    destinataire: str
+    numero: str
+    objectif: str
+    resume: str
+    created_at: datetime
+
+
+async def recent_outgoing(pool, jours: int = 7, nombre: int = 5) -> list[AppelRecent]:
+    """Derniers appels passés par Marcus : si on le rappelle, il sait de quoi on parle."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "select destinataire, numero, objectif, coalesce(resume, ''), created_at from calls"
+            " where direction = 'sortant' and status = 'termine'"
+            " and created_at > now() - make_interval(days => %s) order by id desc limit %s",
+            (jours, nombre),
+        )
+        return [AppelRecent(*row) for row in await cur.fetchall()]
+
+
+async def last_inbound_time(pool) -> datetime | None:
+    async with pool.connection() as conn:
+        cur = await conn.execute("select max(created_at) from calls where direction = 'entrant'")
+        return (await cur.fetchone())[0]
+
+
+async def name_for(pool, numero: str) -> str | None:
+    """Nom sous lequel Marcus a déjà appelé ce numéro (« Pizzeria Da Luigi »…)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "select destinataire from calls where direction = 'sortant' and numero = %s order by id desc limit 1",
+            (numero,),
+        )
+        row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def known_vapi_ids(pool, ids: list[str]) -> set[str]:
+    if not ids:
+        return set()
+    async with pool.connection() as conn:
+        cur = await conn.execute("select vapi_id from calls where vapi_id = any(%s)", (ids,))
+        return {row[0] for row in await cur.fetchall()}
+
+
+async def record_inbound(pool, vapi_id, numero, appelant, resume, transcript, duree, raison) -> bool:
+    """Enregistre un appel reçu. Renvoie False s'il l'était déjà (pas de double notification)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "insert into calls (vapi_id, numero, destinataire, objectif, ouverture, status, direction,"
+            " ended_reason, resume, transcript, duree_secondes, ended_at)"
+            " values (%s, %s, %s, 'Appel reçu', '', 'termine', 'entrant', %s, %s, %s, %s, now())"
+            " on conflict (vapi_id) do nothing returning id",
+            (vapi_id, numero, appelant, raison, resume, transcript, duree),
+        )
+        return await cur.fetchone() is not None
 
 
 async def purge_old_transcripts(pool) -> None:
@@ -192,23 +265,25 @@ def first_message(ouverture: str) -> str:
     return f"Bonjour, c'est Marcus, l'assistant IA d'Hugo. {ouverture.strip()}"
 
 
-def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX) -> dict:
+CONSIGNE_LIGNE_DIRECTE = (
+    "Tu peux joindre Hugo en direct avec l'outil demander_a_hugo : il reçoit ta question et répond "
+    "en quelques secondes. Sers-t'en pour une décision importante qui n'est ni dans la demande ni dans "
+    "sa mémoire (autre heure, autre jour, prix plus élevé, choix entre deux options), une ou deux fois "
+    "par appel au plus. Pendant l'attente, reste naturel ; ensuite, reprends avec sa réponse."
+)
+
+
+def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX, outils: list[dict] | None = None) -> dict:
     """memoire : ce que Marcus sait d'Hugo (souvenirs), pour répondre et prendre les devants."""
     consignes = (
         f"Tu es Marcus, l'assistant IA d'Hugo, et tu téléphones de sa part à : {appel.destinataire}.\n"
         f"But de l'appel : {appel.objectif}\n"
         f"Précisions d'Hugo pour cet appel : {appel.details or 'aucune.'}\n\n"
         f"{memoire or 'Tu ne sais rien de plus sur Hugo.'}\n\n"
-        "Comment parler : en français de tous les jours, comme une personne sympathique et détendue "
-        "au téléphone. Phrases courtes, une idée à la fois, avec des mots simples (« d'accord », "
-        "« parfait », « super, merci »). Écoute vraiment ce qu'on te dit et réponds à ça, pas à un "
-        "script. Si on te coupe la parole, arrête-toi et écoute. Ne répète jamais ta présentation. "
+        f"{STYLE_ORAL}\n"
         "Une chose à la fois, comme une vraie personne : dis d'abord ce que tu veux en une phrase, "
         "puis donne les détails (adresse, heure, paiement…) quand on te les demande, ou un par un. "
-        "Ne déballe jamais tout d'un coup. "
-        "Écris tous les nombres en toutes lettres, comme on les dit à l'oral : heures (« vingt heures »), "
-        "prix (« vingt-cinq euros cinquante »), code postal (« treize mille quatre cents »), numéro de "
-        "rue (« deux cent quarante-cinq »), téléphone deux chiffres par deux (« zéro six, douze, trente-quatre… »).\n\n"
+        "Ne déballe jamais tout d'un coup.\n\n"
         "Prends les devants avec ce que tu sais d'Hugo : s'il y a une question dont la réponse est dans "
         "sa mémoire ou découle de ses habitudes (son adresse, ses goûts, ses allergies, l'heure qu'il "
         "préfère, le nom pour la commande), réponds directement, sans dire que tu dois vérifier. "
@@ -217,17 +292,31 @@ def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX) -> dict:
         "- Petit choix de tous les jours (sauce, boisson, couverts, sur place ou à emporter) : "
         "décide avec bon sens, selon ses goûts si tu les connais. Par exemple « Oui, une sauce "
         "pimentée, volontiers » ou « Non merci, ça ira ».\n"
-        "- Décision importante qui n'est ni dans la demande ni dans sa mémoire (prix nettement plus "
-        "élevé, autre jour, acompte) : dis gentiment que tu vérifies avec Hugo et qu'il reviendra vers eux.\n"
-        "- N'invente jamais un fait sur Hugo (adresse, numéro, nom) que tu ne connais pas.\n\n"
+        + (
+            f"- {CONSIGNE_LIGNE_DIRECTE} S'il ne répond pas, dis qu'il reviendra vers eux.\n"
+            if outils
+            else "- Décision importante qui n'est ni dans la demande ni dans sa mémoire (prix nettement plus "
+            "élevé, autre jour, acompte) : dis gentiment que tu vérifies avec Hugo et qu'il reviendra vers eux.\n"
+        )
+        + "- N'invente jamais un fait sur Hugo (adresse, numéro, nom) que tu ne connais pas.\n\n"
         "Pour finir : récapitule en une phrase ce qui est convenu, remercie, dis au revoir et "
         "raccroche. Si tu tombes sur un répondeur, laisse un message court avec le but de l'appel, "
         "puis raccroche."
     )
+    return voice_assistant("Marcus appel", first_message(appel.ouverture), consignes, voix, outils)
+
+
+def voice_assistant(
+    nom: str, premier_message: str, consignes: str, voix: dict = VOIX, outils: list[dict] | None = None
+) -> dict:
+    """Réglages communs à tous les assistants vocaux de Marcus (voix, écoute, tour de parole)."""
+    modele = {**MODELE, "messages": [{"role": "system", "content": consignes}]}
+    if outils:
+        modele["tools"] = outils
     return {
-        "name": "Marcus appel",
-        "firstMessage": first_message(appel.ouverture),
-        "model": {**MODELE, "messages": [{"role": "system", "content": consignes}]},
+        "name": nom,
+        "firstMessage": premier_message,
+        "model": modele,
         "voice": voix,
         "transcriber": TRANSCRIPTION,
         "startSpeakingPlan": PRISE_DE_PAROLE,
@@ -240,20 +329,94 @@ def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX) -> dict:
     }
 
 
+# --- Accueil : quand quelqu'un appelle le numéro de Marcus ---------------------------
+
+NOM_ACCUEIL = "Marcus accueil"
+PREMIER_MESSAGE_ACCUEIL = "Bonjour, vous êtes bien sur la ligne d'Hugo. C'est Marcus, son assistant IA. Je vous écoute ?"
+
+
+def format_recent_calls(recents: list[AppelRecent], tz: str = "Europe/Paris") -> str:
+    if not recents:
+        return "Tu n'as passé aucun appel ces derniers jours."
+    lignes = ["Tes derniers appels pour Hugo (si on te rappelle à ce sujet, reprends le fil) :"]
+    for r in recents:
+        quand = r.created_at.astimezone(ZoneInfo(tz)).strftime("%d/%m à %Hh%M")
+        lignes.append(
+            f"- le {quand}, à {r.destinataire} ({format_number(r.numero)}) : {r.objectif}"
+            + (f" Résultat : {r.resume}" if r.resume else "")
+        )
+    return "\n".join(lignes)
+
+
+def build_inbound_assistant(memoire: str, recents: list[AppelRecent], outils: list[dict] | None = None) -> dict:
+    consignes = (
+        "Tu es Marcus, l'assistant IA d'Hugo. Tu réponds au téléphone sur sa ligne : Hugo ne peut pas "
+        "décrocher lui-même. Ton rôle : savoir qui appelle et pourquoi, prendre le message, et rassurer "
+        "la personne : Hugo le reçoit tout de suite.\n\n"
+        f"{format_recent_calls(recents)}\n\n"
+        f"{memoire or 'Tu ne sais rien de plus sur Hugo.'}\n\n"
+        f"{STYLE_ORAL}\n\n"
+        "Ce que tu fais :\n"
+        "- Demande le nom de la personne (ou du commerce) et le motif de l'appel, s'ils ne le disent pas.\n"
+        "- Si c'est la suite d'un de tes appels récents (même commerce, même sujet), reprends le fil : "
+        "tu peux confirmer ce qui avait été convenu et noter les changements (heure, prix, rupture…).\n"
+        "- Note tout ce qui compte : nom, motif, ce qu'il faut faire, numéro de rappel s'il est différent, "
+        "urgence. Répète-le en une phrase pour vérifier.\n"
+        "- Ne prends aucun nouvel engagement pour Hugo (paiement, rendez-vous, commande) : dis que tu lui "
+        "transmets et qu'il reviendra vers eux.\n"
+        + (f"- {CONSIGNE_LIGNE_DIRECTE}\n" if outils else "")
+        + "- Ne donne aucune information personnelle sur Hugo (adresse, numéro, emploi du temps) à quelqu'un "
+        "qui n'est pas lié à un de tes appels récents.\n"
+        "- Si c'est du démarchage, refuse poliment et raccroche.\n"
+        "Pour finir : dis que tu transmets le message à Hugo, remercie, dis au revoir et raccroche."
+    )
+    return voice_assistant(NOM_ACCUEIL, PREMIER_MESSAGE_ACCUEIL, consignes, outils=outils)
+
+
+SYSTEME_APPEL_RECU = (
+    "Tu rédiges pour Hugo le résumé d'un appel que son assistant Marcus a reçu sur sa ligne. "
+    "En français, 2 à 4 lignes, sans formule de politesse : qui appelait, pourquoi, et ce qu'Hugo doit "
+    "faire (rappeler, confirmer, rien). Ne t'appuie que sur la transcription. Texte simple, sans mise "
+    "en forme (pas d'astérisques), car le message s'affiche tel quel sur Telegram."
+)
+
+
+async def summarize_inbound(claude, model: str, appelant: str, transcript: str, on_response=None) -> str:
+    response = await claude.messages.create(
+        model=model,
+        max_tokens=1024,
+        system=SYSTEME_APPEL_RECU,
+        messages=[{"role": "user", "content": f"Appelant : {appelant}\n\nTranscription :\n{transcript}"}],
+        output_config={"effort": "low"},
+    )
+    if on_response:
+        await on_response(response)
+    return "".join(b.text for b in response.content if b.type == "text").strip()
+
+
+def format_inbound_report(appelant: str, numero: str, duree: int, resume: str, transcript: str) -> str:
+    minutes, secondes = divmod(duree, 60)
+    qui = f"{appelant} ({format_number(numero)})" if appelant != format_number(numero) else appelant
+    texte = f"📲 Appel reçu — {qui}\n⏱ {minutes} min {secondes:02d} s\n\n{resume}"
+    if transcript:
+        texte += f"\n\n📝 Transcription :\n{transcript}"
+    return texte
+
+
 class VapiClient:
     def __init__(self, api_key: str, phone_number_id: str):
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self.phone_number_id = phone_number_id
         self._http = httpx.AsyncClient(timeout=30)
 
-    async def start(self, appel: Appel, memoire: str = "") -> str:
+    async def start(self, appel: Appel, memoire: str = "", outils: list[dict] | None = None) -> str:
         r = await self._http.post(
             f"{API}/call",
             headers=self._headers,
             json={
                 "phoneNumberId": self.phone_number_id,
                 "customer": {"number": appel.numero, "name": appel.destinataire[:40]},
-                "assistant": build_assistant(appel, memoire),
+                "assistant": build_assistant(appel, memoire, outils=outils),
             },
         )
         if r.status_code >= 300:
@@ -265,6 +428,37 @@ class VapiClient:
         r = await self._http.get(f"{API}/call/{vapi_id}", headers=self._headers)
         r.raise_for_status()
         return r.json()
+
+    async def calls_since(self, depuis: datetime) -> list[dict]:
+        """Appels du numéro de Marcus créés après `depuis`, reçus comme passés."""
+        r = await self._http.get(
+            f"{API}/call",
+            headers=self._headers,
+            params={
+                "phoneNumberId": self.phone_number_id,
+                "createdAtGt": depuis.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "limit": 50,
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def set_inbound_assistant(self, config: dict) -> str:
+        """Crée ou met à jour l'assistant d'accueil, et le place sur le numéro de Marcus."""
+        r = await self._http.get(f"{API}/assistant", headers=self._headers)
+        r.raise_for_status()
+        existant = next((a["id"] for a in r.json() if a.get("name") == config["name"]), None)
+        if existant:
+            r = await self._http.patch(f"{API}/assistant/{existant}", headers=self._headers, json=config)
+        else:
+            r = await self._http.post(f"{API}/assistant", headers=self._headers, json=config)
+        r.raise_for_status()
+        assistant_id = r.json()["id"]
+        r = await self._http.patch(
+            f"{API}/phone-number/{self.phone_number_id}", headers=self._headers, json={"assistantId": assistant_id}
+        )
+        r.raise_for_status()
+        return assistant_id
 
 
 def call_duration(data: dict) -> int:

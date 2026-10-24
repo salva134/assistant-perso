@@ -48,7 +48,8 @@ En langage naturel : « rappelle-moi demain 9 h de… », « qu'est-ce que j'ai 
 - `app/voice.py` : transcription des vocaux (5 minutes au maximum)
 - `app/reminders.py`, `app/brief.py` : rappels et point du matin
 - `app/calendar_google.py` : Google Agenda (`scripts/google_auth.py` pour l'autorisation)
-- `app/calls.py`, `app/calls_bot.py` : appels via Vapi et numéro Twilio, validation par bouton, compte rendu
+- `app/calls.py`, `app/calls_bot.py` : appels via Vapi et numéro Twilio, validation par bouton, compte rendu ; accueil quand on appelle le numéro de Marcus (résumé envoyé sur Telegram)
+- `app/hotline.py` : ligne directe pendant un appel (question à Hugo sur Telegram, réponse sous 45 s) ; serveur local 127.0.0.1:8787 exposé par un tunnel Cloudflare (`cloudflared`, installé avec `winget install Cloudflare.cloudflared`), jeton secret renouvelé à chaque démarrage
 - `app/config.py`, `app/db.py`, `app/dates.py` : configuration, base, dates
 - `prompts/` : personnalité de Marcus et consignes de mémoire
 - `sql/schema.sql` : tables `messages`, `memories`, `reminders`, `usage`

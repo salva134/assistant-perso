@@ -63,6 +63,10 @@ create table if not exists calls (
   ended_at timestamptz
 );
 
+-- Appels reçus (rappels de commerces, proches…) : même table, sens 'entrant'
+alter table calls add column if not exists direction text not null default 'sortant';
+create unique index if not exists calls_vapi_id_idx on calls (vapi_id);
+
 -- RLS activé sans aucune politique : la clé publique (anon) ne voit rien,
 -- seul le bot, avec la connexion directe, lit et écrit.
 alter table messages enable row level security;

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, ContextTypes
 
-from app import calls, memory, usage
+from app import calls, hotline, memory, usage
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         # Toute la mémoire d'Hugo accompagne l'appel : Marcus peut répondre et improviser
         memoire = memory.format_for_prompt(await memory.all_memories(pool))
-        vapi_id = await data["vapi"].start(appel, memoire)
+        vapi_id = await data["vapi"].start(appel, memoire, call_tools(data))
     except Exception:
         logger.exception("Lancement de l'appel n°%s impossible", call_id)
         await calls.set_status(pool, call_id, "echec")
@@ -181,6 +181,155 @@ async def report(context: ContextTypes.DEFAULT_TYPE, appel: calls.Appel, etat: d
     # Le compte rendu rejoint la conversation : Hugo peut ensuite demander « c'était combien ? »
     await memory.save_message(pool, "assistant", f"[Compte rendu de l'appel à {appel.destinataire}] {resume}")
     logger.info("Appel n°%s terminé (%s)", appel.id, raison)
+    # Si ce commerce rappelle, l'accueil connaît maintenant cet appel
+    try:
+        await refresh_inbound(data)
+    except Exception:
+        logger.exception("Mise à jour de l'assistant d'accueil impossible")
+
+
+def call_tools(bot_data: dict) -> list[dict]:
+    """Outils donnés aux assistants vocaux : la ligne directe avec Hugo, si le tunnel est ouvert."""
+    ligne = bot_data.get("ligne")
+    return [hotline.tool_definition(ligne.url, ligne.jeton)] if ligne else []
+
+
+async def refresh_inbound(bot_data: dict) -> None:
+    """Met à jour l'assistant d'accueil avec la mémoire d'Hugo et les derniers appels passés."""
+    pool = bot_data["pool"]
+    memoire = memory.format_for_prompt(await memory.all_memories(pool))
+    config = calls.build_inbound_assistant(memoire, await calls.recent_outgoing(pool), call_tools(bot_data))
+    await bot_data["vapi"].set_inbound_assistant(config)
+
+
+# --- Ligne directe : questions à Hugo pendant un appel ---------------------------------
+
+
+def question_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("👍 Oui", callback_data="question:Oui"),
+            InlineKeyboardButton("👎 Non", callback_data="question:Non"),
+        ]]
+    )
+
+
+def make_tool_answerer(app: Application):
+    """Répond aux outils appelés par Vapi pendant un appel (pour l'instant : demander_a_hugo)."""
+
+    async def repondre(nom: str, arguments: dict, payload: dict) -> str:
+        if nom != hotline.NOM_OUTIL:
+            raise ValueError(f"Outil inconnu : {nom}")
+        question = (arguments.get("question") or "").strip()
+        if not question:
+            raise ValueError("Question vide.")
+        data = app.bot_data
+        appelant = await caller_name(data["pool"], payload)
+
+        async def envoyer(q: hotline.Question) -> None:
+            await app.bot.send_message(
+                data["config"].allowed_user_id,
+                f"❓ En ligne avec {q.appelant}, on me demande :\n\n{q.texte}\n\n"
+                f"Réponds-moi ici, par écrit ou en vocal, dans les {hotline.DELAI_REPONSE_SECONDES} secondes.",
+                reply_markup=question_buttons(),
+            )
+
+        reponse = await hotline.ask(data, envoyer, question, appelant)
+        if reponse is None:
+            await app.bot.send_message(
+                data["config"].allowed_user_id,
+                "⌛ Trop tard pour cette question : je leur ai dit que tu reviendrais vers eux.",
+            )
+        logger.info("Question à Hugo pendant l'appel avec %s : %s", appelant, "répondue" if reponse else "sans réponse")
+        return hotline.result_for_call(reponse)
+
+    return repondre
+
+
+async def caller_name(pool, payload: dict) -> str:
+    """Avec qui Marcus est en ligne : le destinataire d'un appel passé, ou le nom connu de l'appelant."""
+    appel_vapi = (payload.get("message") or {}).get("call") or {}
+    async with pool.connection() as conn:
+        cur = await conn.execute("select destinataire from calls where vapi_id = %s", (appel_vapi.get("id"),))
+        row = await cur.fetchone()
+    if row:
+        return row[0]
+    numero = hotline.caller_number(payload)
+    return await calls.name_for(pool, numero) or (calls.format_number(numero) if numero else "un correspondant")
+
+
+async def on_question_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    reponse = (query.data or "").split(":", 1)[-1]
+    if hotline.answer(context.bot_data, reponse):
+        await query.answer("Transmis")
+        await query.edit_message_reply_markup(None)
+        await query.message.reply_text(f"✅ Je lui réponds : « {reponse} ».")
+    else:
+        await query.answer("Trop tard, l'appel a continué sans ta réponse.")
+        await query.edit_message_reply_markup(None)
+
+
+async def refresh_inbound_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        await refresh_inbound(context.bot_data)
+    except Exception:
+        logger.exception("Mise à jour de l'assistant d'accueil impossible")
+
+
+# On regarde les appels reçus sur cette fenêtre (rattrape ceux reçus pendant que Marcus était éteint)
+FENETRE_APPELS_RECUS = timedelta(days=2)
+
+
+async def inbound_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Chaque minute : un appel reçu vient de se terminer ? Résumé à Hugo sur Telegram."""
+    data = context.bot_data
+    pool = data["pool"]
+    try:
+        depuis = max(
+            (await calls.last_inbound_time(pool)) or datetime.min.replace(tzinfo=timezone.utc),
+            datetime.now(timezone.utc) - FENETRE_APPELS_RECUS,
+        )
+        appels = await data["vapi"].calls_since(depuis - timedelta(minutes=1))
+        termines = [a for a in appels if a.get("type") == "inboundPhoneCall" and a.get("status") == "ended"]
+        deja_vus = await calls.known_vapi_ids(pool, [a["id"] for a in termines])
+        for etat in termines:
+            if etat["id"] not in deja_vus:
+                await report_inbound(context, etat)
+    except Exception:
+        logger.exception("Suivi des appels reçus impossible")
+
+
+async def report_inbound(context: ContextTypes.DEFAULT_TYPE, etat: dict) -> None:
+    data = context.bot_data
+    pool = data["pool"]
+    numero = (etat.get("customer") or {}).get("number") or "numéro masqué"
+    appelant = await calls.name_for(pool, numero) or calls.format_number(numero)
+    transcript = calls.call_transcript(etat)
+    duree = calls.call_duration(etat)
+    if len(transcript) < 40:
+        resume = "La personne a raccroché sans laisser de message."
+    else:
+        try:
+            resume = await calls.summarize_inbound(
+                data["claude"], data["config"].model, appelant, transcript,
+                on_response=lambda r: usage.record_claude(pool, r),
+            )
+        except Exception:
+            logger.exception("Résumé de l'appel reçu impossible")
+            resume = "Je n'ai pas réussi à résumer l'appel : lis la transcription."
+    # L'insertion échoue sans bruit si un autre passage l'a déjà traité : pas de double message
+    if not await calls.record_inbound(
+        pool, etat["id"], numero, appelant, resume, transcript or None, duree, etat.get("endedReason")
+    ):
+        return
+    if etat.get("cost"):
+        await usage.record(pool, "vapi", "vapi-call", cost_usd=float(etat["cost"]))
+    texte = calls.format_inbound_report(appelant, numero, duree, resume, transcript)
+    for i in range(0, len(texte), 4096):
+        await context.bot.send_message(data["config"].allowed_user_id, texte[i : i + 4096])
+    await memory.save_message(pool, "assistant", f"[Appel reçu de {appelant}] {resume}")
+    logger.info("Appel reçu de %s signalé", appelant)
 
 
 async def resume_following(app: Application) -> int:

@@ -206,7 +206,7 @@ def bouton(monkeypatch):
     async def refusal_reason(context):
         return etat.refus
 
-    async def start(a, memoire=""):
+    async def start(a, memoire="", outils=None):
         etat.lances.append(a)
         etat.memoire = memoire
         return "vapi-123"
