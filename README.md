@@ -8,7 +8,7 @@ Plan complet : [docs/PLAN.md](docs/PLAN.md).
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-lock.txt   # versions exactes testées
 copy .env.example .env          # puis remplir les clés
 python scripts/apply_schema.py  # crée les tables (sans risque de le relancer)
 python scripts/check_keys.py    # vérifie chaque service
@@ -56,5 +56,6 @@ Marcus lit aussi les photos (avec ou sans légende) et retient les contacts part
 - `prompts/` : personnalité de Marcus et consignes de mémoire
 - `sql/schema.sql` : tables `messages`, `memories`, `reminders`, `usage`
 - `scripts/` : vérification des clés, application du schéma, test rapide de la mémoire
+- `.github/workflows/tests.yml` : à chaque envoi sur GitHub, style (ruff) et tests en Python 3.12 et 3.13
 - `tests/` : `pytest -q` (environ 30 s). `tests/test_base.py` teste le vrai SQL sur Supabase dans un schéma temporaire, créé puis supprimé ; `SKIP_DB_TESTS=1` pour s'en passer.
 - `app/twilio_costs.py` : prix réels des appels chez Twilio, qui remplacent les estimations

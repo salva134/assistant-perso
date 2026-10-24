@@ -71,7 +71,7 @@ async def ask(bot_data: dict, envoyer, texte: str, appelant: str, delai: float =
     await envoyer(q)
     try:
         return await asyncio.wait_for(asyncio.shield(q.reponse), delai)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         q.reponse.cancel()
         return None
 
@@ -227,14 +227,15 @@ async def start(repondre) -> Ligne | None:
     if cloudflared is None:
         logger.warning("cloudflared introuvable : pas de questions à Hugo pendant les appels")
         return None
-    kill_orphans()
+    await asyncio.to_thread(kill_orphans)
     jeton = secrets.token_urlsafe(24)  # nouveau à chaque démarrage
     runner = web.AppRunner(make_web_app(jeton, repondre), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", PORT).start()
     # Popen dans un fil plutôt qu'asyncio : la boucle utilisée sous Windows (pour psycopg)
     # ne sait pas lancer de programme externe
-    tunnel = subprocess.Popen(
+    tunnel = await asyncio.to_thread(
+        subprocess.Popen,
         [cloudflared, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PORT}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

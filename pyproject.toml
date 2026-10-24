@@ -1,3 +1,13 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+# Erreurs, bugs probables, modernisation, simplifications, pièges asynchrones, ordre des imports
+select = ["E", "F", "W", "B", "UP", "SIM", "ASYNC", "I"]
+# E501 : quelques chaînes de consignes en français sont plus lisibles d'un seul tenant
+ignore = ["E501", "UP017"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

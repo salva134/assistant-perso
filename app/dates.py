@@ -40,7 +40,7 @@ def parse_local(text: str, timezone: str) -> datetime:
     try:
         dt = datetime.fromisoformat(text.strip())
     except ValueError:
-        raise ValueError(f"Date illisible : « {text} ». Format attendu : AAAA-MM-JJTHH:MM.")
+        raise ValueError(f"Date illisible : « {text} ». Format attendu : AAAA-MM-JJTHH:MM.") from None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ZoneInfo(timezone))
     return dt

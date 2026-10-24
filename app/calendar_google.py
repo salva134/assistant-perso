@@ -95,10 +95,9 @@ class GoogleCalendar:
         corps: dict = {}
         if titre:
             corps["summary"] = titre
-        if debut is not None:
-            if fin is None:
-                duree = (actuel.fin - actuel.debut) if actuel.debut and actuel.fin else timedelta(hours=1)
-                fin = debut + duree
+        if debut is not None and fin is None:
+            duree = (actuel.fin - actuel.debut) if actuel.debut and actuel.fin else timedelta(hours=1)
+            fin = debut + duree
         if debut is not None or fin is not None:
             debut = debut or actuel.debut
             if debut is None:
@@ -270,7 +269,7 @@ def add_tools(toolbox: Toolbox, agenda: GoogleCalendar) -> None:
         try:
             jour = date.fromisoformat(entree["jour"].strip())
         except ValueError:
-            raise ValueError(f"Jour illisible : « {entree['jour']} ». Format attendu : AAAA-MM-JJ.")
+            raise ValueError(f"Jour illisible : « {entree['jour']} ». Format attendu : AAAA-MM-JJ.") from None
         evenements = await agenda.events_of_day(jour)
         detail = format_with_refs(evenements, tz) if evenements else "Rien de prévu."
         return f"{dates.format_day(datetime.combine(jour, datetime.min.time()))} :\n{detail}"

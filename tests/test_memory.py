@@ -16,7 +16,7 @@ SOUVENIRS = [
 
 
 def ops(*operations):
-    return {"operations": [dict(zip(("action", "id", "type", "content"), o)) for o in operations]}
+    return {"operations": [dict(zip(("action", "id", "type", "content"), o, strict=True)) for o in operations]}
 
 
 # --- parse_operations --------------------------------------------------------

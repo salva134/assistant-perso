@@ -164,7 +164,7 @@ def test_decaler_un_rendez_vous(agenda):
     ref, titre, debut, fin = faux.modifs[0]
     assert ref == "abc123" and titre is None and fin is None
     assert debut == paris(2026, 10, 29, 16, 0)
-    assert "Modifié : Dentiste, le jeudi 29 octobre 2026 à 16 h 00 jusqu'à 17 h 00." == texte
+    assert texte == "Modifié : Dentiste, le jeudi 29 octobre 2026 à 16 h 00 jusqu'à 17 h 00."
 
 
 def test_annuler_un_rendez_vous(agenda):

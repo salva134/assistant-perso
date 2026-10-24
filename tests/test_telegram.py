@@ -108,7 +108,7 @@ def test_oublie_introuvable(souvenirs):
 
 
 def test_corrige(souvenirs):
-    f = Faux(args="Aubagne -> Hugo habite à Marseille.".split()).run(main.on_corrige)
+    f = Faux(args=["Aubagne", "->", "Hugo", "habite", "à", "Marseille."]).run(main.on_corrige)
     assert souvenirs.corriges == [(1, "Hugo habite à Marseille.")]
     assert f.reponses == ["Corrigé : Hugo habite à Marseille."]
 
@@ -118,7 +118,7 @@ def test_corrige_mal_forme(souvenirs):
 
 
 def test_corrige_refuse_une_donnee_sensible(souvenirs):
-    f = Faux(args="1 -> Mon mot de passe est azerty".split()).run(main.on_corrige)
+    f = Faux(args=["1", "->", "Mon", "mot", "de", "passe", "est", "azerty"]).run(main.on_corrige)
     assert souvenirs.corriges == [] and "Je ne garde pas" in f.reponses[0]
 
 

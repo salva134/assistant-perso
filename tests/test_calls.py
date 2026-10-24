@@ -271,7 +271,7 @@ def test_suivi_compte_depuis_le_lancement_chez_vapi():
     lancement = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat().replace("+00:00", "Z")
     depuis = datetime.now(timezone.utc) - calls_bot.launch_time(a, {"createdAt": lancement})
     assert depuis < timedelta(minutes=3)
-    assert calls_bot.SUIVI_MAX > timedelta(seconds=calls.DUREE_MAX_APPEL_SECONDES)
+    assert timedelta(seconds=calls.DUREE_MAX_APPEL_SECONDES) < calls_bot.SUIVI_MAX
 
 
 def test_refus_si_un_appel_est_deja_en_cours(bouton):

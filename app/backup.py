@@ -24,7 +24,7 @@ def backup(database_url: str, dossier: Path) -> str:
             # psycopg lit le type vector comme du texte : rien de spécial pour les embeddings
             cur = conn.execute(f"select * from {table} order by id")
             noms = [c.name for c in cur.description]
-            sauvegarde[table] = [dict(zip(noms, ligne)) for ligne in cur.fetchall()]
+            sauvegarde[table] = [dict(zip(noms, ligne, strict=True)) for ligne in cur.fetchall()]
 
     fichier = dossier / f"marcus-{date.today().isoformat()}.json.gz"
     with gzip.open(fichier, "wt", encoding="utf-8") as f:

@@ -73,7 +73,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     try:
         plafond_usd = float(plafond)
     except ValueError:
-        raise SystemExit("DAILY_BUDGET_USD doit être un nombre de dollars, par exemple 1 ou 0.5.")
+        raise SystemExit("DAILY_BUDGET_USD doit être un nombre de dollars, par exemple 1 ou 0.5.") from None
 
     return Config(
         telegram_bot_token=env["TELEGRAM_BOT_TOKEN"].strip(),

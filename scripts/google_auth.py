@@ -18,9 +18,9 @@ SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
 
 def write_env(nom: str, valeur: str) -> None:
-    lignes = ENV.read_text(encoding="utf-8").splitlines()
-    if any(l.startswith(f"{nom}=") for l in lignes):
-        lignes = [f"{nom}={valeur}" if l.startswith(f"{nom}=") else l for l in lignes]
+    lignes = ENV.read_text(encoding="utf-8-sig").splitlines()
+    if any(ligne.startswith(f"{nom}=") for ligne in lignes):
+        lignes = [f"{nom}={valeur}" if ligne.startswith(f"{nom}=") else ligne for ligne in lignes]
     else:
         lignes.append(f"{nom}={valeur}")
     ENV.write_text("\n".join(lignes) + "\n", encoding="utf-8")
