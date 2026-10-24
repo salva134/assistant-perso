@@ -149,14 +149,16 @@ def test_google() -> tuple[str, str]:
     )
     if r.status_code != 200:
         return ECHEC, f"jeton refusé ({r.json().get('error', r.status_code)}) : relancer scripts/google_auth.py"
+    # Marcus n'a que le droit aux événements (calendar.events) : on teste leur lecture
     r = httpx.get(
-        "https://www.googleapis.com/calendar/v3/calendars/primary",
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        params={"maxResults": 1},
         headers={"Authorization": f"Bearer {r.json()['access_token']}"},
         timeout=10,
     )
     if r.status_code != 200:
         return ECHEC, f"agenda inaccessible (HTTP {r.status_code})"
-    return OK, f"agenda « {r.json().get('summary', 'principal')} »"
+    return OK, f"agenda « {r.json().get('summary', 'principal')} » lisible"
 
 
 TESTS = {
