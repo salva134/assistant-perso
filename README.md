@@ -23,8 +23,9 @@ Une tâche planifiée Windows « Marcus » le lance au démarrage du PC (même s
 powershell -ExecutionPolicy Bypass -File deploy\windows\installer_tache.ps1
 ```
 
-- Arrêter Marcus : `Stop-ScheduledTask -TaskName Marcus`
-- Le relancer (après une mise à jour du code) : `Stop-ScheduledTask -TaskName Marcus; Start-ScheduledTask -TaskName Marcus`
+- Arrêter Marcus : `powershell -ExecutionPolicy Bypass -File deploy\windows\arreter.ps1`
+- Le relancer (après une mise à jour du code) : `powershell -ExecutionPolicy Bypass -File deploy\windows\redemarrer.ps1`
+- `Stop-ScheduledTask` seul ne suffit pas : il ferme la tâche mais pas Python, et l'ancienne copie reste. Au lancement, la tâche ferme de toute façon les copies restantes.
 - Ne jamais lancer `python -m app.main` en même temps que la tâche : deux copies se gênent (« Conflict »).
 
 Pour passer un jour sur un serveur Linux : `.\deploy\deploy.ps1 -Serveur <IP> -Premiere` (voir `deploy/`).

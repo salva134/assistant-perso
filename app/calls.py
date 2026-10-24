@@ -19,7 +19,7 @@ from app.llm import Toolbox
 logger = logging.getLogger(__name__)
 
 API = "https://api.vapi.ai"
-APPELS_MAX_PAR_JOUR = 5
+APPELS_MAX_PAR_JOUR = 10
 VALIDITE_RECAPITULATIF = timedelta(minutes=10)
 INTERVALLE_SUIVI_SECONDES = 15
 DUREE_MAX_APPEL_SECONDES = 500

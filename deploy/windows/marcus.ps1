@@ -12,6 +12,9 @@ $env:BACKUP_DIR = Join-Path $projet "backups"
 $env:PYTHONUTF8 = "1"
 
 while ($true) {
+    # Une copie laissee par un arret precedent (Stop-ScheduledTask ne ferme pas Python) bloquerait
+    # Telegram et le port de la ligne directe : on la ferme avant de lancer la notre.
+    & (Join-Path $PSScriptRoot "arreter.ps1") -CopiesSeulement | Out-Null
     & $python -m app.main
     $code = $LASTEXITCODE
     if ($code -ne 0) {

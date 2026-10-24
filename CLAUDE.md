@@ -23,8 +23,10 @@ Plan complet : @docs/PLAN.md. On avance phase par phase, jamais deux à la fois.
 
 ## Commandes
 - Marcus tourne en permanence via la tâche planifiée Windows « Marcus » : la redémarrer
-  après un changement de code (`Stop-ScheduledTask -TaskName Marcus; Start-ScheduledTask -TaskName Marcus`),
+  après un changement de code (`powershell -ExecutionPolicy Bypass -File deploy\windows\redemarrer.ps1`),
   et ne jamais lancer `python -m app.main` en parallèle. Journal : `logs/marcus.log`.
-- Lancer le bot à la main (tâche arrêtée) : `python -m app.main`
+- Arrêter Marcus : `deploy\windows\arreter.ps1` (même commande). `Stop-ScheduledTask` seul ne ferme pas
+  Python : l'ancienne copie reste et bloque Telegram (« Conflict ») et la ligne directe.
+- Lancer le bot à la main (après `arreter.ps1`) : `python -m app.main`
 - Tests : `pytest -q` (inclut des tests sur la vraie base dans un schéma temporaire ; `SKIP_DB_TESTS=1` pour les sauter)
 - Vérifier les clés : `python scripts/check_keys.py`
