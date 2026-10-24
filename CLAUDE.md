@@ -9,7 +9,7 @@ Plan complet : @docs/PLAN.md. On avance phase par phase, jamais deux à la fois.
 - Python 3.12+ (3.13 sur le PC), python-telegram-bot (polling), anthropic, openai, psycopg (Supabase,
   pgvector côté base), aiohttp + tunnel cloudflared pour la ligne directe pendant un appel.
 - Discussion : claude-haiku-5-5. Appels (dans Vapi) : claude-sonnet-5, voix Cartesia « Henri »,
-  écoute Deepgram nova-3 en français. Fuseau horaire : Europe/Paris partout.
+  écoute Deepgram Flux (flux-general-multi) en français. Fuseau horaire : Europe/Paris partout.
 - Versions figées : requirements.txt (dépendances directes) et requirements-lock.txt (tout).
 - GitHub Actions (.github/workflows/tests.yml) : ruff + pytest en Python 3.12 et 3.13 à chaque envoi.
 

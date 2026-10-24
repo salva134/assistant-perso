@@ -158,18 +158,19 @@ def un_appel():
 def test_l_assistant_d_appel_recoit_la_ligne_directe():
     outil = hotline.tool_definition("https://abc.trycloudflare.com", "j")
     a = calls.build_assistant(un_appel(), outils=[outil])
-    assert a["model"]["tools"] == [outil]
+    assert [o["type"] for o in a["model"]["tools"]] == ["endCall", outil["type"]]
+    assert a["model"]["tools"][1] == outil
     assert "demander_a_hugo" in a["model"]["messages"][0]["content"]
 
 
 def test_sans_tunnel_pas_d_outil():
     a = calls.build_assistant(un_appel())
-    assert "tools" not in a["model"]
+    assert [o["type"] for o in a["model"]["tools"]] == ["endCall"]  # seulement de quoi raccrocher
     assert "qu'il reviendra vers eux" in a["model"]["messages"][0]["content"]
 
 
 def test_l_accueil_recoit_aussi_la_ligne_directe():
     outil = hotline.tool_definition("https://abc.trycloudflare.com", "j")
     a = calls.build_inbound_assistant("", [], [outil])
-    assert a["model"]["tools"] == [outil]
+    assert a["model"]["tools"][1:] == [outil]
     assert "demander_a_hugo" in a["model"]["messages"][0]["content"]

@@ -26,17 +26,23 @@ DUREE_MAX_APPEL_SECONDES = 500
 
 # Chaîne écoute → réflexion → voix, réglée pour le français.
 # (GPT Realtime a été essayé le 24/10/2026 : accent anglais, phrases coupées.)
+# Deepgram Flux : écoute faite pour la conversation, qui repère elle-même la fin de phrase. Avec Nova-3
+# et la fin de tour de Vapi, il fallait 1,5 à 2 s entre la fin d'une phrase et la réponse (24/10/2026).
 TRANSCRIPTION = {
     "provider": "deepgram",
-    "model": "nova-3",
-    "language": "fr",
-    # Silence (ms) avant de considérer qu'un morceau de phrase est fini : 10 ms par défaut coupe trop tôt
-    "endpointing": 300,
+    "model": "flux-general-multi",
+    "languages": ["fr"],
+    # Certitude demandée pour dire « la personne a fini » (0,7 : équilibré ; plus bas, il coupe la parole)
+    "eotThreshold": 0.7,
+    # Au plus 3 s de silence avant de répondre quand Flux hésite (5 s par défaut)
+    "eotTimeoutMs": 3000,
 }
 # Claude Sonnet 5 : le plus rapide (0,9 s avant le premier mot) et le plus malin d'un comparatif
 # du 24/10/2026 contre GPT-4.1 (1,6 s), GPT-5.5 (1,7 s), GPT-5.6 Terra (1,3 s), Claude Haiku 5.5 (1,0 s).
 # Pas de « temperature » : les modèles Claude récents la refusent.
-MODELE = {"provider": "anthropic", "model": "claude-sonnet-5", "maxTokens": 250}
+# Sonnet 5 réfléchit avant de répondre quand il le juge utile (Vapi ne permet pas de l'en empêcher), et
+# cette réflexion compte dans maxTokens : à 250, un message de répondeur a été coupé net (24/10/2026).
+MODELE = {"provider": "anthropic", "model": "claude-sonnet-5", "maxTokens": 1000}
 # Voix française native de Cartesia ; d'autres sont listées dans VOIX_FRANCAISES
 VOIX_FRANCAISES = {
     "marc": "ce74c4da-4aee-435d-bc6d-81d1a9367e12",  # Conversational Buddy
@@ -45,17 +51,14 @@ VOIX_FRANCAISES = {
     "antoine": "0418348a-0ca2-4e90-9986-800fb8b3bbc0",
 }
 # Henri : choisi par Hugo le 24/10/2026 après comparaison de Marc, Fabien et Henri
-VOIX = {"provider": "cartesia", "model": "sonic-3.5", "voiceId": VOIX_FRANCAISES["henri"]}
-# Tour de parole : laisser finir les phrases (adresses, numéros), mais s'arrêter dès qu'on le coupe
-PRISE_DE_PAROLE = {
-    "waitSeconds": 0.6,
-    "smartEndpointingPlan": {"provider": "vapi"},  # recommandé par Vapi hors anglais
-    "transcriptionEndpointingPlan": {
-        "onPunctuationSeconds": 0.3,
-        "onNoPunctuationSeconds": 1.5,
-        "onNumberSeconds": 1.0,
-    },
+VOIX = {
+    "provider": "cartesia", "model": "sonic-3.5", "voiceId": VOIX_FRANCAISES["henri"],
+    # La voix démarre dès 15 caractères de réponse (30 par défaut) : quelques dixièmes de seconde gagnés
+    "chunkPlan": {"enabled": True, "minCharacters": 15},
 }
+# Tour de parole : la fin de phrase vient de Flux (pas de smartEndpointingPlan, sinon il est ignoré) ;
+# petite marge avant de parler (0,6 s auparavant : on entendait le blanc)
+PRISE_DE_PAROLE = {"waitSeconds": 0.2}
 INTERRUPTION = {"numWords": 0, "voiceSeconds": 0.25, "backoffSeconds": 1.0}
 
 # Façon de parler commune aux appels passés et reçus
@@ -63,7 +66,10 @@ STYLE_ORAL = (
     "Comment parler : en français de tous les jours, comme une personne sympathique et détendue "
     "au téléphone. Phrases courtes, une idée à la fois, avec des mots simples (« d'accord », "
     "« parfait », « super, merci »). Écoute vraiment ce qu'on te dit et réponds à ça, pas à un "
-    "script. Si on te coupe la parole, arrête-toi et écoute. Ne répète jamais ta présentation. "
+    "script. Si on te coupe la parole, arrête-toi et écoute. Tu as déjà dit bonjour et ton nom en "
+    "début d'appel : ne les redis jamais, même si on te répond « allô » ou « bonjour ». "
+    "Si la personne te dit au revoir la première, raccroche simplement avec l'outil endCall. "
+    "Réponds tout de suite, sans longue réflexion : au téléphone, chaque seconde de silence s'entend. "
     "Écris tous les nombres en toutes lettres, comme on les dit à l'oral : heures (« vingt heures »), "
     "prix (« vingt-cinq euros cinquante »), code postal (« treize mille quatre cents »), numéro de "
     "rue (« deux cent quarante-cinq »), téléphone deux chiffres par deux (« zéro six, douze, trente-quatre… »)."
@@ -264,6 +270,25 @@ async def purge_old_transcripts(pool) -> None:
 
 # Première phrase de Marcus, au départ comme à l'arrivée d'un appel (choix d'Hugo, 24/10/2026)
 BONJOUR = "Bonjour, c'est Marcus."
+SALUTATION_EN_TETE = re.compile(
+    r"^\s*(?:bonjour|bonsoir|allô|allo)\b\s*[,.!]*\s*(?:c['’]est marcus\b\s*[,.!]*\s*)?", re.IGNORECASE
+)
+
+# Pour raccrocher, c'est l'outil qui dit au revoir, et Vapi coupe une fois la phrase dite (méthode
+# conseillée par Vapi). Essais du 24/10/2026 : sans message, Vapi ajoutait « Au revoir. » après celui de
+# Marcus (deux au revoir) ; avec un message vide, il raccrochait au milieu de l'au revoir de Marcus.
+# Juste « Au revoir ! » : Marcus finit souvent par « bonne journée à vous », qu'on entendait sinon deux fois.
+RACCROCHER = {"type": "endCall", "messages": [{"type": "request-start", "content": "Au revoir !"}]}
+FIN_D_APPEL = (
+    "puis raccroche avec l'outil endCall : il dit lui-même « Au revoir ! » en raccrochant, alors ne "
+    "dis jamais au revoir toi-même."
+)
+
+
+def sans_salutation(texte: str) -> str:
+    """« Bonjour, c'est Marcus. J'appelle… » → « J'appelle… » : le bonjour est déjà dit en décrochant."""
+    reste = SALUTATION_EN_TETE.sub("", texte.strip(), count=1)
+    return reste[:1].upper() + reste[1:]
 
 
 CONSIGNE_LIGNE_DIRECTE = (
@@ -279,8 +304,9 @@ def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX, outils: 
     """memoire : ce que Marcus sait d'Hugo (souvenirs), pour répondre et prendre les devants."""
     consignes = (
         f"Tu es Marcus, l'assistant IA d'Hugo, et tu téléphones de sa part à : {appel.destinataire}.\n"
-        f"Tu as commencé l'appel en disant seulement « {BONJOUR} ». Dès que la personne répond, "
-        f"enchaîne avec : « {appel.ouverture.strip()} » (ou une variante naturelle).\n"
+        f"Tu as commencé l'appel en disant seulement « {BONJOUR} ». Ne redis ni bonjour ni ton nom : "
+        "même si on te répond « Allô ? » ou « Bonjour », enchaîne directement avec : "
+        f"« {sans_salutation(appel.ouverture)} » (ou une variante naturelle).\n"
         f"But de l'appel : {appel.objectif}\n"
         f"Précisions d'Hugo pour cet appel : {appel.details or 'aucune.'}\n\n"
         f"{memoire or 'Tu ne sais rien de plus sur Hugo.'}\n\n"
@@ -303,9 +329,10 @@ def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX, outils: 
             "élevé, autre jour, acompte) : dis gentiment que tu vérifies avec Hugo et qu'il reviendra vers eux.\n"
         )
         + "- N'invente jamais un fait sur Hugo (adresse, numéro, nom) que tu ne connais pas.\n\n"
-        "Pour finir : récapitule en une phrase ce qui est convenu, remercie, dis au revoir et "
-        "raccroche. Si tu tombes sur un répondeur, laisse un message court avec le but de l'appel, "
-        "puis raccroche."
+        f"Pour finir : récapitule en une phrase ce qui est convenu, remercie, {FIN_D_APPEL}\n"
+        "Si tu tombes sur un répondeur : ton bonjour du début, dit pendant l'annonce, n'est pas "
+        "enregistré. Après le bip, laisse un seul message court (deux ou trois phrases) qui commence par "
+        f"« Bonjour, c'est Marcus, l'assistant d'Hugo », avec le but de l'appel, {FIN_D_APPEL}"
     )
     return voice_assistant("Marcus appel", BONJOUR, consignes, voix, outils)
 
@@ -314,9 +341,11 @@ def voice_assistant(
     nom: str, premier_message: str, consignes: str, voix: dict = VOIX, outils: list[dict] | None = None
 ) -> dict:
     """Réglages communs à tous les assistants vocaux de Marcus (voix, écoute, tour de parole)."""
-    modele = {**MODELE, "messages": [{"role": "system", "content": consignes}]}
-    if outils:
-        modele["tools"] = outils
+    modele = {
+        **MODELE,
+        "messages": [{"role": "system", "content": consignes}],
+        "tools": [RACCROCHER, *(outils or [])],
+    }
     return {
         "name": nom,
         "firstMessage": premier_message,
@@ -326,7 +355,9 @@ def voice_assistant(
         "startSpeakingPlan": PRISE_DE_PAROLE,
         "stopSpeakingPlan": INTERRUPTION,
         "backgroundDenoisingEnabled": True,
-        "endCallFunctionEnabled": True,
+        # Remplacé par l'outil RACCROCHER ; False explicite, car l'assistant d'accueil est mis à jour
+        # (PATCH) et garderait sinon l'ancien réglage, avec son « Au revoir » en trop
+        "endCallFunctionEnabled": False,
         "maxDurationSeconds": DUREE_MAX_APPEL_SECONDES,
         # Enregistrement audio de l'appel, envoyé à Hugo sur Telegram à la fin
         "artifactPlan": {"recordingEnabled": True, "recordingFormat": "mp3"},
@@ -355,7 +386,9 @@ def format_recent_calls(recents: list[AppelRecent], tz: str = "Europe/Paris") ->
 def build_inbound_assistant(memoire: str, recents: list[AppelRecent], outils: list[dict] | None = None) -> dict:
     consignes = (
         "Tu es Marcus, l'assistant IA d'Hugo. Tu réponds au téléphone sur sa ligne : Hugo ne peut pas "
-        f"décrocher lui-même. Tu as décroché en disant seulement « {BONJOUR} ». Si on demande Hugo, "
+        f"décrocher lui-même. Tu as décroché en disant seulement « {BONJOUR} ». Ne redis ni bonjour ni "
+        "ton nom : si on te répond « Bonjour » ou « Allô », enchaîne directement, par exemple « Qui est "
+        "à l'appareil, et c'est à quel sujet ? ». Si on demande Hugo, "
         "explique que tu es son assistant et que tu prends le message. Ton rôle : savoir qui appelle et "
         "pourquoi, prendre le message, et rassurer la personne : Hugo le reçoit tout de suite.\n\n"
         f"{format_recent_calls(recents)}\n\n"
@@ -373,7 +406,7 @@ def build_inbound_assistant(memoire: str, recents: list[AppelRecent], outils: li
         + "- Ne donne aucune information personnelle sur Hugo (adresse, numéro, emploi du temps) à quelqu'un "
         "qui n'est pas lié à un de tes appels récents.\n"
         "- Si c'est du démarchage, refuse poliment et raccroche.\n"
-        "Pour finir : dis que tu transmets le message à Hugo, remercie, dis au revoir et raccroche."
+        f"Pour finir : dis que tu transmets le message à Hugo, remercie, {FIN_D_APPEL}"
     )
     return voice_assistant(NOM_ACCUEIL, PREMIER_MESSAGE_ACCUEIL, consignes, outils=outils)
 
@@ -624,7 +657,8 @@ DEFINITION = {
             "ouverture": {
                 "type": "string",
                 "description": "Phrase dite après « Bonjour, c'est Marcus. », quand la personne a répondu, "
-                "par exemple « J'appelle de la part d'Hugo pour réserver une table ce soir. »",
+                "sans bonjour ni présentation, par exemple « J'appelle de la part d'Hugo pour réserver "
+                "une table ce soir. »",
             },
             "details": {
                 "type": "string",
@@ -650,7 +684,7 @@ def add_tools(toolbox: Toolbox, pool, on_prepared) -> None:
             numero,
             entree["destinataire"].strip() or format_number(numero),
             entree["objectif"].strip(),
-            entree["ouverture"].strip(),
+            sans_salutation(entree["ouverture"]),
             entree["details"].strip(),
         )
         await on_prepared(appel)

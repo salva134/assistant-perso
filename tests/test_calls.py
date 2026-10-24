@@ -63,17 +63,72 @@ def test_assistant_vocal_en_francais():
     # Juste « Bonjour, c'est Marcus. » ; la raison de l'appel vient quand la personne a répondu
     assert a["firstMessage"] == "Bonjour, c'est Marcus."
     consignes = a["model"]["messages"][0]["content"]
-    assert "enchaîne avec : « J'appelle de sa part pour vous dire qu'il mange au restaurant ce soir. »" in consignes
+    assert "avec : « J'appelle de sa part pour vous dire qu'il mange au restaurant ce soir. »" in consignes
     assert "Maman" in consignes and "mange au resto" in consignes and "23 h" in consignes
     assert "sauce pimentée" in consignes  # les petites questions ont une réponse de bon sens
     assert a["voice"]["provider"] == "cartesia"
     assert a["voice"]["voiceId"] in calls.VOIX_FRANCAISES.values()
-    assert a["transcriber"]["language"] == "fr"
-    assert a["transcriber"]["endpointing"] >= 300  # ne coupe pas au premier silence
-    assert a["startSpeakingPlan"]["transcriptionEndpointingPlan"]["onNumberSeconds"] >= 1.0  # adresses, numéros
+    assert a["transcriber"]["languages"] == ["fr"]
+
+
+def test_reponses_au_tac_au_tac():
+    a = calls.build_assistant(appel())
+    # Flux repère lui-même la fin de phrase : pas de seconde détection de Vapi par-dessus
+    assert a["transcriber"]["model"].startswith("flux")
+    assert "smartEndpointingPlan" not in a["startSpeakingPlan"]
+    assert 0.6 <= a["transcriber"]["eotThreshold"] <= 0.8  # ni trop pressé (coupe la parole), ni trop lent
+    assert a["transcriber"]["eotTimeoutMs"] <= 3000
+    assert a["startSpeakingPlan"]["waitSeconds"] <= 0.2
+    assert a["voice"]["chunkPlan"]["minCharacters"] <= 15  # la voix démarre sans attendre une longue phrase
     assert a["stopSpeakingPlan"]["numWords"] == 0  # s'arrête dès qu'on le coupe
     assert a["artifactPlan"] == {"recordingEnabled": True, "recordingFormat": "mp3"}
     assert a["maxDurationSeconds"] == calls.DUREE_MAX_APPEL_SECONDES
+
+
+@pytest.mark.parametrize("construire", [
+    lambda: calls.build_assistant(appel()),
+    lambda: calls.build_inbound_assistant("", []),
+])
+def test_un_seul_bonjour_et_un_seul_au_revoir(construire):
+    a = construire()
+    consignes = a["model"]["messages"][0]["content"]
+    assert "ne les redis jamais" in consignes  # pas de second « bonjour, c'est Marcus »
+    # L'outil dit au revoir en raccrochant (Vapi coupe une fois la phrase dite) ; Marcus ne le dit pas
+    assert "ne dis jamais au revoir toi-même" in consignes
+    # Jamais vide (coupait l'au revoir de Marcus), et sans « bonne journée » (Marcus le dit souvent)
+    assert a["model"]["tools"][0] == {
+        "type": "endCall", "messages": [{"type": "request-start", "content": "Au revoir !"}],
+    }
+    assert a["endCallFunctionEnabled"] is False  # l'ancien raccrochage, avec son « Au revoir » en trop
+
+
+def test_la_reflexion_de_claude_ne_coupe_pas_ses_phrases():
+    # La réflexion de Sonnet 5 compte dans maxTokens : à 250, un message de répondeur s'est arrêté net
+    assert calls.MODELE["maxTokens"] >= 1000
+    consignes = calls.build_assistant(appel())["model"]["messages"][0]["content"]
+    assert "sans longue réflexion" in consignes
+
+
+def test_le_repondeur_garde_son_bonjour():
+    consignes = calls.build_assistant(appel())["model"]["messages"][0]["content"]
+    assert "répondeur" in consignes and "Après le bip" in consignes
+
+
+@pytest.mark.parametrize("ouverture, attendu", [
+    ("Bonjour, c'est Marcus. J'appelle de la part d'Hugo.", "J'appelle de la part d'Hugo."),
+    ("Bonjour ! j'appelle pour réserver.", "J'appelle pour réserver."),
+    ("Allô, c’est Marcus, je vous appelle pour Hugo.", "Je vous appelle pour Hugo."),
+    ("bonsoir Madame, j'appelle pour la commande.", "Madame, j'appelle pour la commande."),
+    ("J'appelle de sa part.", "J'appelle de sa part."),
+    ("Bonjournée spéciale : ...", "Bonjournée spéciale : ..."),
+])
+def test_l_ouverture_ne_redit_pas_bonjour(ouverture, attendu):
+    assert calls.sans_salutation(ouverture) == attendu
+
+
+def test_l_ouverture_sans_bonjour_dans_les_consignes():
+    a = calls.build_assistant(appel(ouverture="Bonjour, j'appelle pour réserver."))
+    assert "« J'appelle pour réserver. »" in a["model"]["messages"][0]["content"]
 
 
 def test_la_memoire_d_hugo_accompagne_l_appel():
