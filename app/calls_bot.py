@@ -1,12 +1,13 @@
 """Côté Telegram des appels : récapitulatif avec boutons, lancement, suivi et compte rendu."""
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, ContextTypes
 
-from app import calls, hotline, memory, usage
+from app import calls, hotline, memory, twilio_costs, usage
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,11 @@ async def report(context: ContextTypes.DEFAULT_TYPE, appel: calls.Appel, etat: d
     if etat.get("cost"):
         await usage.record(pool, "vapi", "vapi-call", cost_usd=float(etat["cost"]))
     if duree:
-        await usage.record(pool, "twilio", "twilio-voice", cost_usd=calls.estimated_twilio_cost(appel.numero, duree))
+        # Estimation provisoire, remplacée par le prix réel dès que Twilio le publie
+        await usage.record(
+            pool, "twilio", "twilio-voice", cost_usd=calls.estimated_twilio_cost(appel.numero, duree),
+            ref=etat.get("phoneCallProviderId") or None, estime=True,
+        )
 
     echange = calls.format_exchange(etat, calls.short_name(appel.destinataire))
     texte = calls.format_report(appel, duree, resume, echange)
@@ -331,6 +336,12 @@ async def report_inbound(context: ContextTypes.DEFAULT_TYPE, etat: dict) -> None
         return
     if etat.get("cost"):
         await usage.record(pool, "vapi", "vapi-call", cost_usd=float(etat["cost"]))
+    if duree:
+        await usage.record(
+            pool, "twilio", "twilio-voice-inbound",
+            cost_usd=math.ceil(duree / 60) * twilio_costs.PRIX_MINUTE_RECU,
+            ref=etat.get("phoneCallProviderId") or None, estime=True,
+        )
     echange = calls.format_exchange(etat, "Appelant")
     texte = calls.format_inbound_report(numero, duree, resume, echange, deja_appele)
     for i in range(0, len(texte), 4096):
@@ -372,3 +383,11 @@ async def resume_following(app: Application) -> int:
 
 async def purge_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     await calls.purge_old_transcripts(context.bot_data["pool"])
+
+
+async def twilio_costs_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toutes les 10 minutes : prix réels Twilio à la place des estimations."""
+    try:
+        await twilio_costs.reconcile(context.bot_data["pool"], context.bot_data["twilio"])
+    except Exception:
+        logger.exception("Correction des coûts Twilio impossible")

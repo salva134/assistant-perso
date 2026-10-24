@@ -26,7 +26,20 @@ from telegram.ext import (
     filters,
 )
 
-from app import brief, calendar_google, calls, calls_bot, dates, hotline, llm, memory, reminders, usage, voice
+from app import (
+    brief,
+    calendar_google,
+    calls,
+    calls_bot,
+    dates,
+    hotline,
+    llm,
+    memory,
+    reminders,
+    twilio_costs,
+    usage,
+    voice,
+)
 from app.backup import backup
 from app.config import load_config
 from app.db import make_pool
@@ -288,11 +301,18 @@ async def on_corrige(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def on_couts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = context.bot_data
     jour, mois = await usage.spent(data["pool"])
+    estime = await usage.estimated_today(data["pool"])
     plafond = data["config"].daily_budget_usd
-    await update.message.reply_text(
+    texte = (
         f"Aujourd'hui : {usage.format_dollars(jour)} (plafond {usage.format_dollars(plafond)})\n"
         f"Ce mois-ci : {usage.format_dollars(mois)}"
     )
+    if estime:
+        texte += (
+            f"\n\nDont {usage.format_dollars(estime)} de minutes d'appel encore estimées : "
+            "je les corrige dès que Twilio donne le prix réel."
+        )
+    await update.message.reply_text(texte)
 
 
 async def on_rappels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -516,6 +536,9 @@ def build_application() -> Application:
         # Appels reçus : vérifiés chaque minute ; accueil remis à jour chaque heure (mémoire qui évolue)
         app.job_queue.run_repeating(calls_bot.inbound_job, interval=60, first=30)
         app.job_queue.run_repeating(calls_bot.refresh_inbound_job, interval=3600, first=3600)
+        if config.twilio_account_sid and config.twilio_auth_token:
+            app.bot_data["twilio"] = twilio_costs.TwilioClient(config.twilio_account_sid, config.twilio_auth_token)
+            app.job_queue.run_repeating(calls_bot.twilio_costs_job, interval=600, first=120)
     # Sur le PC, Marcus fait lui-même sa sauvegarde du dimanche (sur un serveur, c'est systemd)
     if os.environ.get("BACKUP_DIR"):
         # days : 0 = dimanche pour python-telegram-bot

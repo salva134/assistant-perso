@@ -22,5 +22,5 @@ On avance phase par phase, jamais deux à la fois.
   après un changement de code (`Stop-ScheduledTask -TaskName Marcus; Start-ScheduledTask -TaskName Marcus`),
   et ne jamais lancer `python -m app.main` en parallèle. Journal : `logs/marcus.log`.
 - Lancer le bot à la main (tâche arrêtée) : `python -m app.main`
-- Tests : `pytest -q`
+- Tests : `pytest -q` (inclut des tests sur la vraie base dans un schéma temporaire ; `SKIP_DB_TESTS=1` pour les sauter)
 - Vérifier les clés : `python scripts/check_keys.py`

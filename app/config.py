@@ -43,6 +43,10 @@ class Config:
     vapi_api_key: str = field(default="", repr=False)
     vapi_phone_number_id: str = ""
 
+    # Twilio : sert à lire le prix réel des appels (facultatif)
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = field(default="", repr=False)
+
     @property
     def calls_enabled(self) -> bool:
         return bool(self.vapi_api_key and self.vapi_phone_number_id)
@@ -85,4 +89,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         google_refresh_token=env.get("GOOGLE_REFRESH_TOKEN", "").strip(),
         vapi_api_key=env.get("VAPI_API_KEY", "").strip(),
         vapi_phone_number_id=env.get("VAPI_PHONE_NUMBER_ID", "").strip(),
+        twilio_account_sid=env.get("TWILIO_ACCOUNT_SID", "").strip(),
+        twilio_auth_token=env.get("TWILIO_AUTH_TOKEN", "").strip(),
     )

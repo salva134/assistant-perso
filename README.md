@@ -56,4 +56,5 @@ Marcus lit aussi les photos (avec ou sans légende) et retient les contacts part
 - `prompts/` : personnalité de Marcus et consignes de mémoire
 - `sql/schema.sql` : tables `messages`, `memories`, `reminders`, `usage`
 - `scripts/` : vérification des clés, application du schéma, test rapide de la mémoire
-- `tests/` : `pytest -q`
+- `tests/` : `pytest -q` (environ 30 s). `tests/test_base.py` teste le vrai SQL sur Supabase dans un schéma temporaire, créé puis supprimé ; `SKIP_DB_TESTS=1` pour s'en passer.
+- `app/twilio_costs.py` : prix réels des appels chez Twilio, qui remplacent les estimations

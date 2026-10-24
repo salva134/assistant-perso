@@ -63,6 +63,10 @@ create table if not exists calls (
   ended_at timestamptz
 );
 
+-- Coûts estimés (minutes Twilio) corrigés ensuite avec le prix réel : référence de l'appel Twilio
+alter table usage add column if not exists ref text;
+alter table usage add column if not exists estime boolean not null default false;
+
 -- Rappels qui se répètent : aucune, quotidienne, jours_ouvres, hebdomadaire, mensuelle
 alter table reminders add column if not exists repetition text not null default 'aucune';
 
