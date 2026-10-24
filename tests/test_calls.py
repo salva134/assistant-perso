@@ -60,11 +60,10 @@ def test_cout_estime_mobile_et_fixe():
 
 def test_assistant_vocal_en_francais():
     a = calls.build_assistant(appel(details="Hugo rentre vers 23 h"))
-    assert a["firstMessage"] == (
-        "Bonjour, c'est Marcus, l'assistant IA d'Hugo. "
-        "J'appelle de sa part pour vous dire qu'il mange au restaurant ce soir."
-    )
+    # Juste « Bonjour, c'est Marcus. » ; la raison de l'appel vient quand la personne a répondu
+    assert a["firstMessage"] == "Bonjour, c'est Marcus."
     consignes = a["model"]["messages"][0]["content"]
+    assert "enchaîne avec : « J'appelle de sa part pour vous dire qu'il mange au restaurant ce soir. »" in consignes
     assert "Maman" in consignes and "mange au resto" in consignes and "23 h" in consignes
     assert "sauce pimentée" in consignes  # les petites questions ont une réponse de bon sens
     assert a["voice"]["provider"] == "cartesia"
@@ -73,7 +72,7 @@ def test_assistant_vocal_en_francais():
     assert a["transcriber"]["endpointing"] >= 300  # ne coupe pas au premier silence
     assert a["startSpeakingPlan"]["transcriptionEndpointingPlan"]["onNumberSeconds"] >= 1.0  # adresses, numéros
     assert a["stopSpeakingPlan"]["numWords"] == 0  # s'arrête dès qu'on le coupe
-    assert a["artifactPlan"] == {"recordingEnabled": False}
+    assert a["artifactPlan"] == {"recordingEnabled": True, "recordingFormat": "mp3"}
     assert a["maxDurationSeconds"] == calls.DUREE_MAX_APPEL_SECONDES
 
 
@@ -87,7 +86,7 @@ def test_la_memoire_d_hugo_accompagne_l_appel():
 def test_recapitulatif_pour_hugo():
     texte = calls.format_recap(appel(details="2 personnes"))
     assert "Maman" in texte and "06 12 34 56 78" in texte
-    assert "« Bonjour, c'est Marcus" in texte
+    assert "Je dirai : « Bonjour, c'est Marcus. », puis : « J'appelle de sa part" in texte
     assert "2 personnes" in texte
 
 

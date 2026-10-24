@@ -19,7 +19,7 @@ def test_l_accueil_connait_les_appels_recents_et_la_memoire():
     a = calls.build_inbound_assistant("Ce que tu sais d'Hugo :\n- Hugo adore le piment.", [RECENT])
     consignes = a["model"]["messages"][0]["content"]
     assert a["name"] == calls.NOM_ACCUEIL
-    assert a["firstMessage"].startswith("Bonjour, vous êtes bien sur la ligne d'Hugo")
+    assert a["firstMessage"] == "Bonjour, c'est Marcus."
     assert "Pizzeria Da Luigi" in consignes and "25,50 €" in consignes and "le 24/10 à 11h02" in consignes
     assert "Hugo adore le piment." in consignes
     # Même voix et mêmes réglages que les appels passés
@@ -38,9 +38,15 @@ def test_sans_appel_recent():
 
 
 def test_compte_rendu_d_un_appel_recu():
-    texte = calls.format_inbound_report("Pizzeria Da Luigi", "+33442000000", 45, "Livraison décalée à 20h30.", "User: Allô")
-    assert texte.startswith("📲 Appel reçu — Pizzeria Da Luigi (04 42 00 00 00)")
+    texte = calls.format_inbound_report("+33442000000", 45, "Livraison décalée à 20h30.", "User: Allô", "Pizzeria Da Luigi")
+    # Le titre donne le numéro ; l'ancien appel n'est qu'un indice, la personne peut être une autre
+    assert texte.startswith("📲 Appel reçu — 04 42 00 00 00\n(numéro que j'ai déjà appelé pour : Pizzeria Da Luigi)")
     assert "Livraison décalée" in texte and "0 min 45 s" in texte
+
+
+def test_numero_inconnu_sans_indice():
+    texte = calls.format_inbound_report("+33600000000", 10, "Théo demande si Hugo est libre.", "")
+    assert texte.startswith("📲 Appel reçu — 06 00 00 00 00\n⏱")
 
 
 # --- Surveillance des appels reçus ------------------------------------------------------
@@ -59,8 +65,8 @@ def accueil(monkeypatch):
     async def name_for(pool, numero):
         return "Pizzeria Da Luigi" if numero == "+33442000000" else None
 
-    async def summarize_inbound(claude, model, appelant, transcript, on_response=None):
-        etat.resume_appels.append(appelant)
+    async def summarize_inbound(claude, model, numero, transcript, deja_appele=None, on_response=None):
+        etat.resume_appels.append((numero, deja_appele))
         return "La pizzeria prévient que la livraison aura 15 minutes de retard."
 
     async def record_inbound(pool, vapi_id, numero, appelant, resume, transcript, duree, raison):
@@ -109,8 +115,9 @@ def appel_vapi(id_, type_="inboundPhoneCall", status="ended", numero="+334420000
 def test_un_appel_recu_est_resume_et_signale_a_hugo(accueil):
     accueil.vapi = [appel_vapi("v1")]
     asyncio.run(calls_bot.inbound_job(accueil.context))
-    assert accueil.resume_appels == ["Pizzeria Da Luigi"]  # reconnue grâce à l'appel passé
-    assert accueil.envois[0].startswith("📲 Appel reçu — Pizzeria Da Luigi")
+    # Le numéro déjà appelé est transmis comme simple indice au résumé
+    assert accueil.resume_appels == [("04 42 00 00 00", "Pizzeria Da Luigi")]
+    assert accueil.envois[0].startswith("📲 Appel reçu — 04 42 00 00 00\n(numéro que j'ai déjà appelé pour : Pizzeria Da Luigi)")
     assert "retard" in accueil.conversation[0]  # rejoint la conversation
 
 
@@ -119,7 +126,7 @@ def test_un_appel_deja_signale_ne_l_est_pas_deux_fois(accueil):
     asyncio.run(calls_bot.inbound_job(accueil.context))
     asyncio.run(calls_bot.inbound_job(accueil.context))
     assert len(accueil.envois) == 1
-    assert accueil.resume_appels == ["Pizzeria Da Luigi"]  # pas de second résumé payé
+    assert len(accueil.resume_appels) == 1  # pas de second résumé payé
 
 
 def test_seuls_les_appels_recus_et_termines_sont_traites(accueil):

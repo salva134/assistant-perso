@@ -4,6 +4,7 @@ Déroulé : Claude prépare l'appel avec l'outil prepare_call → Hugo voit un r
 deux boutons → « Appeler » lance l'appel → suivi toutes les 15 s → compte rendu sur Telegram.
 """
 
+import asyncio
 import logging
 import math
 import re
@@ -261,15 +262,16 @@ async def purge_old_transcripts(pool) -> None:
 # --- Assistant vocal ---------------------------------------------------------------
 
 
-def first_message(ouverture: str) -> str:
-    return f"Bonjour, c'est Marcus, l'assistant IA d'Hugo. {ouverture.strip()}"
+# Première phrase de Marcus, au départ comme à l'arrivée d'un appel (choix d'Hugo, 24/10/2026)
+BONJOUR = "Bonjour, c'est Marcus."
 
 
 CONSIGNE_LIGNE_DIRECTE = (
     "Tu peux joindre Hugo en direct avec l'outil demander_a_hugo : il reçoit ta question et répond "
     "en quelques secondes. Sers-t'en pour une décision importante qui n'est ni dans la demande ni dans "
     "sa mémoire (autre heure, autre jour, prix plus élevé, choix entre deux options), une ou deux fois "
-    "par appel au plus. Pendant l'attente, reste naturel ; ensuite, reprends avec sa réponse."
+    "par appel au plus. Dis d'abord une seule fois « je vérifie avec Hugo, un petit instant », puis pose "
+    "ta question complète dans l'outil ; ensuite, reprends avec sa réponse."
 )
 
 
@@ -277,6 +279,8 @@ def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX, outils: 
     """memoire : ce que Marcus sait d'Hugo (souvenirs), pour répondre et prendre les devants."""
     consignes = (
         f"Tu es Marcus, l'assistant IA d'Hugo, et tu téléphones de sa part à : {appel.destinataire}.\n"
+        f"Tu as commencé l'appel en disant seulement « {BONJOUR} ». Dès que la personne répond, "
+        f"enchaîne avec : « {appel.ouverture.strip()} » (ou une variante naturelle).\n"
         f"But de l'appel : {appel.objectif}\n"
         f"Précisions d'Hugo pour cet appel : {appel.details or 'aucune.'}\n\n"
         f"{memoire or 'Tu ne sais rien de plus sur Hugo.'}\n\n"
@@ -303,7 +307,7 @@ def build_assistant(appel: Appel, memoire: str = "", voix: dict = VOIX, outils: 
         "raccroche. Si tu tombes sur un répondeur, laisse un message court avec le but de l'appel, "
         "puis raccroche."
     )
-    return voice_assistant("Marcus appel", first_message(appel.ouverture), consignes, voix, outils)
+    return voice_assistant("Marcus appel", BONJOUR, consignes, voix, outils)
 
 
 def voice_assistant(
@@ -324,15 +328,15 @@ def voice_assistant(
         "backgroundDenoisingEnabled": True,
         "endCallFunctionEnabled": True,
         "maxDurationSeconds": DUREE_MAX_APPEL_SECONDES,
-        # Seule la transcription sert au compte rendu : pas d'enregistrement audio
-        "artifactPlan": {"recordingEnabled": False},
+        # Enregistrement audio de l'appel, envoyé à Hugo sur Telegram à la fin
+        "artifactPlan": {"recordingEnabled": True, "recordingFormat": "mp3"},
     }
 
 
 # --- Accueil : quand quelqu'un appelle le numéro de Marcus ---------------------------
 
 NOM_ACCUEIL = "Marcus accueil"
-PREMIER_MESSAGE_ACCUEIL = "Bonjour, vous êtes bien sur la ligne d'Hugo. C'est Marcus, son assistant IA. Je vous écoute ?"
+PREMIER_MESSAGE_ACCUEIL = BONJOUR
 
 
 def format_recent_calls(recents: list[AppelRecent], tz: str = "Europe/Paris") -> str:
@@ -351,8 +355,9 @@ def format_recent_calls(recents: list[AppelRecent], tz: str = "Europe/Paris") ->
 def build_inbound_assistant(memoire: str, recents: list[AppelRecent], outils: list[dict] | None = None) -> dict:
     consignes = (
         "Tu es Marcus, l'assistant IA d'Hugo. Tu réponds au téléphone sur sa ligne : Hugo ne peut pas "
-        "décrocher lui-même. Ton rôle : savoir qui appelle et pourquoi, prendre le message, et rassurer "
-        "la personne : Hugo le reçoit tout de suite.\n\n"
+        f"décrocher lui-même. Tu as décroché en disant seulement « {BONJOUR} ». Si on demande Hugo, "
+        "explique que tu es son assistant et que tu prends le message. Ton rôle : savoir qui appelle et "
+        "pourquoi, prendre le message, et rassurer la personne : Hugo le reçoit tout de suite.\n\n"
         f"{format_recent_calls(recents)}\n\n"
         f"{memoire or 'Tu ne sais rien de plus sur Hugo.'}\n\n"
         f"{STYLE_ORAL}\n\n"
@@ -375,18 +380,27 @@ def build_inbound_assistant(memoire: str, recents: list[AppelRecent], outils: li
 
 SYSTEME_APPEL_RECU = (
     "Tu rédiges pour Hugo le résumé d'un appel que son assistant Marcus a reçu sur sa ligne. "
-    "En français, 2 à 4 lignes, sans formule de politesse : qui appelait, pourquoi, et ce qu'Hugo doit "
-    "faire (rappeler, confirmer, rien). Ne t'appuie que sur la transcription. Texte simple, sans mise "
-    "en forme (pas d'astérisques), car le message s'affiche tel quel sur Telegram."
+    "En français, 2 à 4 lignes, sans formule de politesse : qui appelait (d'après ce que la personne "
+    "dit d'elle-même), pourquoi, et ce qu'Hugo doit faire (rappeler, confirmer, rien). Ne t'appuie que "
+    "sur la transcription. Texte simple, sans mise en forme (pas d'astérisques), car le message "
+    "s'affiche tel quel sur Telegram."
 )
 
 
-async def summarize_inbound(claude, model: str, appelant: str, transcript: str, on_response=None) -> str:
+async def summarize_inbound(
+    claude, model: str, numero: str, transcript: str, deja_appele: str | None = None, on_response=None
+) -> str:
+    indice = (
+        f"\n(Indice : Marcus a déjà appelé ce numéro pour « {deja_appele} », mais ce n'est peut-être "
+        "pas la même personne qui rappelle.)"
+        if deja_appele
+        else ""
+    )
     response = await claude.messages.create(
         model=model,
         max_tokens=1024,
         system=SYSTEME_APPEL_RECU,
-        messages=[{"role": "user", "content": f"Appelant : {appelant}\n\nTranscription :\n{transcript}"}],
+        messages=[{"role": "user", "content": f"Numéro de l'appelant : {numero}{indice}\n\nTranscription :\n{transcript}"}],
         output_config={"effort": "low"},
     )
     if on_response:
@@ -394,12 +408,16 @@ async def summarize_inbound(claude, model: str, appelant: str, transcript: str, 
     return "".join(b.text for b in response.content if b.type == "text").strip()
 
 
-def format_inbound_report(appelant: str, numero: str, duree: int, resume: str, transcript: str) -> str:
+def format_inbound_report(
+    numero: str, duree: int, resume: str, echange: str, deja_appele: str | None = None
+) -> str:
     minutes, secondes = divmod(duree, 60)
-    qui = f"{appelant} ({format_number(numero)})" if appelant != format_number(numero) else appelant
-    texte = f"📲 Appel reçu — {qui}\n⏱ {minutes} min {secondes:02d} s\n\n{resume}"
-    if transcript:
-        texte += f"\n\n📝 Transcription :\n{transcript}"
+    texte = f"📲 Appel reçu — {format_number(numero)}"
+    if deja_appele:
+        texte += f"\n(numéro que j'ai déjà appelé pour : {deja_appele})"
+    texte += f"\n⏱ {minutes} min {secondes:02d} s\n\n{resume}"
+    if echange:
+        texte += f"\n\n💬 L'échange :\n{echange}"
     return texte
 
 
@@ -428,6 +446,19 @@ class VapiClient:
         r = await self._http.get(f"{API}/call/{vapi_id}", headers=self._headers)
         r.raise_for_status()
         return r.json()
+
+    async def recording(self, vapi_id: str, essais: int = 6, attente: float = 5) -> bytes | None:
+        """Enregistrement MP3 de l'appel. Vapi le prépare quelques secondes après la fin : on réessaie."""
+        for essai in range(essais):
+            r = await self._http.get(
+                f"{API}/call/{vapi_id}/mono-recording", headers=self._headers, follow_redirects=True
+            )
+            if r.status_code == 200 and r.content:
+                return r.content
+            if essai < essais - 1:
+                await asyncio.sleep(attente)
+        logger.warning("Enregistrement de l'appel %s indisponible (%s)", vapi_id, r.status_code)
+        return None
 
     async def calls_since(self, depuis: datetime) -> list[dict]:
         """Appels du numéro de Marcus créés après `depuis`, reçus comme passés."""
@@ -474,6 +505,34 @@ def call_transcript(data: dict) -> str:
     return ((data.get("artifact") or {}).get("transcript") or data.get("transcript") or "").strip()
 
 
+def format_exchange(data: dict, interlocuteur: str) -> str:
+    """L'échange en dialogue lisible : « Marcus : … » / « Da Luigi : … »."""
+    lignes = []
+    for m in (data.get("artifact") or {}).get("messages") or data.get("messages") or []:
+        texte = (m.get("message") or "").strip()
+        if not texte:
+            continue
+        if m.get("role") in ("bot", "assistant"):
+            lignes.append(f"Marcus : {texte}")
+        elif m.get("role") == "user":
+            lignes.append(f"{interlocuteur} : {texte}")
+    if lignes:
+        return "\n".join(lignes)
+    # Sans le détail des messages, on repart de la transcription brute
+    transcript = call_transcript(data)
+    return re.sub(r"(?m)^User:", f"{interlocuteur} :", re.sub(r"(?m)^AI:", "Marcus :", transcript))
+
+
+def short_name(destinataire: str) -> str:
+    """« Pizzeria Da Luigi (livraison) » → « Pizzeria Da Luigi », pour les lignes du dialogue."""
+    return re.sub(r"\s*\(.*\)\s*$", "", destinataire).strip() or "Interlocuteur"
+
+
+def recording_filename(destinataire: str, quand: datetime) -> str:
+    nom = re.sub(r"[^\w-]+", "-", short_name(destinataire).lower()).strip("-") or "appel"
+    return f"appel-{quand.astimezone(ZoneInfo('Europe/Paris')):%Y-%m-%d-%Hh%M}-{nom}.mp3"
+
+
 # Raisons de fin qui veulent dire que personne n'a vraiment parlé avec Marcus
 FINS_SANS_CONVERSATION = {
     "customer-did-not-answer": "personne n'a décroché",
@@ -503,21 +562,21 @@ def format_recap(appel: Appel) -> str:
         f"👤 {appel.destinataire}",
         f"☎️ {format_number(appel.numero)}",
         f"🎯 {appel.objectif}",
-        f"🗣 Je commencerai par : « {first_message(appel.ouverture)} »",
+        f"🗣 Je dirai : « {BONJOUR} », puis : « {appel.ouverture} »",
     ]
     if appel.details:
         lignes.append(f"ℹ️ Infos que je peux donner : {appel.details}")
     return "\n".join(lignes)
 
 
-def format_report(appel: Appel, duree: int, resume: str, transcript: str) -> str:
+def format_report(appel: Appel, duree: int, resume: str, echange: str) -> str:
     minutes, secondes = divmod(duree, 60)
     texte = (
         f"📞 Appel terminé — {appel.destinataire} ({format_number(appel.numero)})\n"
         f"⏱ {minutes} min {secondes:02d} s\n\n{resume}"
     )
-    if transcript:
-        texte += f"\n\n📝 Transcription :\n{transcript}"
+    if echange:
+        texte += f"\n\n💬 L'échange :\n{echange}"
     return texte
 
 
@@ -564,8 +623,8 @@ DEFINITION = {
             "objectif": {"type": "string", "description": "Ce que l'appel doit obtenir ou transmettre, en une phrase."},
             "ouverture": {
                 "type": "string",
-                "description": "Phrase dite juste après « Bonjour, c'est Marcus, l'assistant IA d'Hugo. », "
-                "par exemple « J'appelle de sa part pour réserver une table ce soir. »",
+                "description": "Phrase dite après « Bonjour, c'est Marcus. », quand la personne a répondu, "
+                "par exemple « J'appelle de la part d'Hugo pour réserver une table ce soir. »",
             },
             "details": {
                 "type": "string",

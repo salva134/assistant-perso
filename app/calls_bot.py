@@ -175,9 +175,12 @@ async def report(context: ContextTypes.DEFAULT_TYPE, appel: calls.Appel, etat: d
     if duree:
         await usage.record(pool, "twilio", "twilio-voice", cost_usd=calls.estimated_twilio_cost(appel.numero, duree))
 
-    texte = calls.format_report(appel, duree, resume, transcript)
+    echange = calls.format_exchange(etat, calls.short_name(appel.destinataire))
+    texte = calls.format_report(appel, duree, resume, echange)
     for i in range(0, len(texte), 4096):
         await context.bot.send_message(data["config"].allowed_user_id, texte[i : i + 4096])
+    if duree and (appel.vapi_id or etat.get("id")):
+        await send_recording(context, appel.vapi_id or etat["id"], appel.destinataire)
     # Le compte rendu rejoint la conversation : Hugo peut ensuite demander « c'était combien ? »
     await memory.save_message(pool, "assistant", f"[Compte rendu de l'appel à {appel.destinataire}] {resume}")
     logger.info("Appel n°%s terminé (%s)", appel.id, raison)
@@ -222,7 +225,8 @@ def make_tool_answerer(app: Application):
             raise ValueError(f"Outil inconnu : {nom}")
         question = (arguments.get("question") or "").strip()
         if not question:
-            raise ValueError("Question vide.")
+            # Pas d'erreur : une consigne claire permet au modèle de se reprendre aussitôt
+            return "Il manque la question : rappelle l'outil en écrivant ta question complète pour Hugo."
         data = app.bot_data
         appelant = await caller_name(data["pool"], payload)
 
@@ -304,7 +308,9 @@ async def report_inbound(context: ContextTypes.DEFAULT_TYPE, etat: dict) -> None
     data = context.bot_data
     pool = data["pool"]
     numero = (etat.get("customer") or {}).get("number") or "numéro masqué"
-    appelant = await calls.name_for(pool, numero) or calls.format_number(numero)
+    appelant = calls.format_number(numero)
+    # Un numéro déjà appelé n'est qu'un indice : ce n'est pas forcément la même personne qui rappelle
+    deja_appele = await calls.name_for(pool, numero)
     transcript = calls.call_transcript(etat)
     duree = calls.call_duration(etat)
     if len(transcript) < 40:
@@ -312,7 +318,7 @@ async def report_inbound(context: ContextTypes.DEFAULT_TYPE, etat: dict) -> None
     else:
         try:
             resume = await calls.summarize_inbound(
-                data["claude"], data["config"].model, appelant, transcript,
+                data["claude"], data["config"].model, appelant, transcript, deja_appele,
                 on_response=lambda r: usage.record_claude(pool, r),
             )
         except Exception:
@@ -321,15 +327,39 @@ async def report_inbound(context: ContextTypes.DEFAULT_TYPE, etat: dict) -> None
     # L'insertion échoue sans bruit si un autre passage l'a déjà traité : pas de double message
     if not await calls.record_inbound(
         pool, etat["id"], numero, appelant, resume, transcript or None, duree, etat.get("endedReason")
-    ):
+    ):  # appelant = le numéro : le nom réel est dans le résumé
         return
     if etat.get("cost"):
         await usage.record(pool, "vapi", "vapi-call", cost_usd=float(etat["cost"]))
-    texte = calls.format_inbound_report(appelant, numero, duree, resume, transcript)
+    echange = calls.format_exchange(etat, "Appelant")
+    texte = calls.format_inbound_report(numero, duree, resume, echange, deja_appele)
     for i in range(0, len(texte), 4096):
         await context.bot.send_message(data["config"].allowed_user_id, texte[i : i + 4096])
+    if duree:
+        await send_recording(context, etat["id"], f"appel reçu {appelant}")
     await memory.save_message(pool, "assistant", f"[Appel reçu de {appelant}] {resume}")
     logger.info("Appel reçu de %s signalé", appelant)
+
+
+async def send_recording(context: ContextTypes.DEFAULT_TYPE, vapi_id: str, destinataire: str) -> None:
+    """Envoie l'enregistrement audio de l'appel à Hugo, juste après le compte rendu."""
+    data = context.bot_data
+    try:
+        audio = await data["vapi"].recording(vapi_id)
+        if audio is None:
+            await context.bot.send_message(
+                data["config"].allowed_user_id, "🎧 L'enregistrement audio n'est pas disponible pour cet appel."
+            )
+            return
+        await context.bot.send_audio(
+            data["config"].allowed_user_id,
+            audio=audio,
+            filename=calls.recording_filename(destinataire, datetime.now(timezone.utc)),
+            title=f"Appel — {calls.short_name(destinataire)}",
+            performer="Marcus",
+        )
+    except Exception:
+        logger.exception("Envoi de l'enregistrement de l'appel %s impossible", vapi_id)
 
 
 async def resume_following(app: Application) -> int:

@@ -118,8 +118,8 @@ def tool_definition(url: str, jeton: str) -> dict:
             "headers": {"X-Marcus-Jeton": jeton},
             "timeoutSeconds": DELAI_REPONSE_SECONDES + 15,
         },
+        # Pas de message « request-start » : Marcus annonce déjà lui-même qu'il vérifie
         "messages": [
-            {"type": "request-start", "content": "Je vérifie avec Hugo, un petit instant."},
             {
                 "type": "request-response-delayed",
                 "content": "Il regarde, encore une petite seconde.",

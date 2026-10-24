@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from app import calls, hotline, main
+from app import calls, calls_bot, hotline, main
 
 PAYLOAD = {
     "message": {
@@ -91,7 +91,14 @@ def test_definition_de_l_outil():
     assert outil["server"]["url"] == "https://abc.trycloudflare.com/vapi/jeton123"
     assert outil["server"]["headers"] == {"X-Marcus-Jeton": "jeton123"}
     assert outil["server"]["timeoutSeconds"] > hotline.DELAI_REPONSE_SECONDES
-    assert outil["messages"][0]["content"] == "Je vérifie avec Hugo, un petit instant."
+    # Marcus annonce lui-même qu'il vérifie : pas de phrase automatique en double
+    assert [m["type"] for m in outil["messages"]] == ["request-response-delayed"]
+
+
+def test_question_vide_donne_une_consigne_au_lieu_d_une_erreur():
+    repondre = calls_bot.make_tool_answerer(SimpleNamespace(bot_data={}))
+    resultat = asyncio.run(repondre("demander_a_hugo", {"question": "  "}, {}))
+    assert "Il manque la question" in resultat
 
 
 def test_lecture_des_appels_d_outil():
