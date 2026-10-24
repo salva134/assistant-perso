@@ -47,17 +47,33 @@ def build_system(system_prompt: str, memories_text: str) -> list[dict]:
     ]
 
 
-def build_messages(history: Sequence[dict], user_text: str, now_text: str | None = None) -> list[dict]:
+@dataclass(frozen=True)
+class Image:
+    data: str  # base64
+    media_type: str  # image/jpeg, image/png…
+
+
+def build_messages(
+    history: Sequence[dict], user_text: str, now_text: str | None = None, images: Sequence[Image] = ()
+) -> list[dict]:
     """Historique récent + nouveau message, au format de l'API.
 
     La date et l'heure vont dans le dernier message seulement : le début du prompt
     reste identique d'un message à l'autre, ce qui permet le cache.
+    Les images (photo envoyée par Hugo) précèdent le texte dans ce dernier message.
     """
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
     # L'API attend une conversation qui commence par l'utilisateur
     while messages and messages[0]["role"] != "user":
         messages.pop(0)
-    contenu = f"[{now_text}]\n{user_text}" if now_text else user_text
+    texte = f"[{now_text}]\n{user_text}" if now_text else user_text
+    if images:
+        contenu = [
+            {"type": "image", "source": {"type": "base64", "media_type": i.media_type, "data": i.data}}
+            for i in images
+        ] + [{"type": "text", "text": texte}]
+    else:
+        contenu = texte
     messages.append({"role": "user", "content": contenu})
     return messages
 
@@ -93,13 +109,14 @@ async def reply(
     now_text: str | None = None,
     on_response: Callable[[object], Awaitable[None]] | None = None,
     toolbox: Toolbox | None = None,
+    images: Sequence[Image] = (),
 ) -> str:
     """Envoie le message à Claude, exécute les outils demandés, renvoie le texte final.
 
     on_response est appelé après chaque réponse de l'API (journal des coûts).
     """
     toolbox = toolbox or Toolbox()
-    messages = build_messages(history, user_text, now_text)
+    messages = build_messages(history, user_text, now_text, images)
     params = {
         "model": model,
         "max_tokens": MAX_TOKENS,

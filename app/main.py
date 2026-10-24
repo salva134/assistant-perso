@@ -1,10 +1,12 @@
 """Démarrage du bot Telegram de Marcus. Lancer avec : python -m app.main"""
 
 import asyncio
+import base64
 import datetime
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -180,8 +182,17 @@ async def keep_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
         await asyncio.sleep(4)
 
 
-async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, entete: str = "") -> None:
-    """Répond à un message (écrit ou transcrit) : souvenirs, Claude, base, apprentissage."""
+async def answer(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_text: str,
+    entete: str = "",
+    images: Sequence[llm.Image] = (),
+    texte_historique: str | None = None,
+) -> None:
+    """Répond à un message (écrit, transcrit ou photo) : souvenirs, Claude, base, apprentissage.
+
+    texte_historique : ce qui est gardé en base à la place de user_text (« [Photo] … »)."""
     data = context.bot_data
     config, pool = data["config"], data["pool"]
     frappe = asyncio.create_task(keep_typing(context, update.effective_chat.id))
@@ -197,8 +208,10 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
             now_text=dates.format_now(dates.now(config.timezone)),
             on_response=lambda r: usage.record_claude(pool, r),
             toolbox=data["toolbox"],
+            images=images,
         )
         # L'échange n'entre en base qu'une fois la réponse obtenue
+        user_text = texte_historique or user_text
         source_id = await memory.save_message(pool, "user", user_text)
         await memory.save_message(pool, "assistant", reponse)
     except Exception:
@@ -314,8 +327,64 @@ async def morning_brief(context: ContextTypes.DEFAULT_TYPE) -> None:
         await record_failure(context, "point du matin")
 
 
+TAILLE_MAX_IMAGE = 4_500_000  # l'API Claude refuse les images de plus de 5 Mo
+QUESTION_PHOTO_PAR_DEFAUT = "Regarde cette photo et dis-moi ce qui est utile pour moi (en bref)."
+
+
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Photo (ou image envoyée en fichier) : Marcus la regarde, avec la légende éventuelle."""
+    message = update.message
+    if message.photo:
+        fichier_tg, type_mime = message.photo[-1], "image/jpeg"  # la plus grande taille
+    else:
+        fichier_tg, type_mime = message.document, message.document.mime_type or "image/jpeg"
+    if type_mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+        await message.reply_text("Je lis les photos JPG, PNG, GIF ou WebP. Envoie-la plutôt en photo.")
+        return
+    if (fichier_tg.file_size or 0) > TAILLE_MAX_IMAGE:
+        await message.reply_text("Cette image est trop lourde pour moi : envoie-la en photo plutôt qu'en fichier.")
+        return
+    try:
+        if await over_budget(update, context):
+            return
+        fichier = await context.bot.get_file(fichier_tg.file_id)
+        contenu = bytes(await fichier.download_as_bytearray())
+    except Exception:
+        logger.exception("Téléchargement de la photo impossible")
+        await message.reply_text(MESSAGE_ERREUR)
+        return
+    legende = (message.caption or "").strip()
+    image = llm.Image(base64.standard_b64encode(contenu).decode("ascii"), type_mime)
+    await answer(
+        update, context, legende or QUESTION_PHOTO_PAR_DEFAUT, images=[image],
+        texte_historique=f"[Photo envoyée] {legende}".strip(),
+    )
+
+
+async def on_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Contact partagé : Marcus retient son numéro (ou met à jour l'ancien)."""
+    data = context.bot_data
+    contact = update.message.contact
+    nom = " ".join(p for p in (contact.first_name, contact.last_name) if p).strip() or "ce contact"
+    try:
+        numero = calls.format_number(calls.normalize_number(contact.phone_number))
+    except ValueError:
+        numero = contact.phone_number
+    souvenir = f"Le numéro de téléphone de {nom} est le {numero}."
+    try:
+        await memory.remember_contact(data["pool"], data["embed"], nom, souvenir)
+        await memory.save_message(data["pool"], "user", f"[Contact partagé] {nom} : {numero}")
+        reponse = f"📇 C'est noté : {nom}, {numero}. Dis-moi qui c'est pour toi (ta mère, un ami…) et je le retiendrai aussi."
+        await memory.save_message(data["pool"], "assistant", reponse)
+    except Exception:
+        logger.exception("Contact non enregistré")
+        await update.message.reply_text(MESSAGE_ERREUR)
+        return
+    await update.message.reply_text(reponse)
+
+
 async def on_unsupported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Je comprends le texte et les vocaux, pas encore les photos ni les fichiers.")
+    await update.message.reply_text("Je comprends le texte, les vocaux, les photos et les contacts, pas encore les autres fichiers.")
 
 
 async def keep_database_awake(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -433,6 +502,10 @@ def build_application() -> Application:
         MessageHandler(filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND, on_text)
     )
     app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & filters.VOICE, on_voice))
+    app.add_handler(
+        MessageHandler(filters.UpdateType.MESSAGE & (filters.PHOTO | filters.Document.IMAGE), on_photo)
+    )
+    app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & filters.CONTACT, on_contact))
     app.add_handler(MessageHandler(filters.UpdateType.MESSAGE & ~filters.TEXT, on_unsupported))
     app.add_error_handler(on_error)
     fuseau = ZoneInfo(config.timezone)

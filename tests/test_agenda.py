@@ -27,8 +27,8 @@ def test_evenement_avec_heure():
 
 
 def test_evenement_journee_entiere_et_sans_titre():
-    e = calendar_google.parse_event({"start": {"date": "2026-10-29"}, "end": {"date": "2026-10-30"}})
-    assert e == Evenement("(sans titre)", None, None)
+    e = calendar_google.parse_event({"id": "e1", "start": {"date": "2026-10-29"}, "end": {"date": "2026-10-30"}})
+    assert e == Evenement("(sans titre)", None, None, "e1", date(2026, 10, 29))
 
 
 def test_mise_en_forme_des_evenements():

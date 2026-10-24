@@ -80,8 +80,8 @@ class FausseJobQueue:
 def outils(monkeypatch):
     base = {}
 
-    async def add(pool, text, due_at):
-        base[len(base) + 1] = Rappel(len(base) + 1, text, due_at)
+    async def add(pool, text, due_at, repetition="aucune"):
+        base[len(base) + 1] = Rappel(len(base) + 1, text, due_at, repetition)
         return len(base)
 
     async def delete(pool, reminder_id):

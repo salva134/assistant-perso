@@ -37,7 +37,9 @@ Pour passer un jour sur un serveur Linux : `.\deploy\deploy.ps1 -Serveur <IP> -P
 - `/couts` : dépense du jour et du mois (plafond : `DAILY_BUDGET_USD`, 1 $ par défaut, 10 $ dans le .env)
 - `/rappels` : rappels en attente
 
-En langage naturel : « rappelle-moi demain 9 h de… », « qu'est-ce que j'ai jeudi ? » (Google Agenda, une fois `scripts/google_auth.py` passé), « appelle ma mère pour lui dire… » (récapitulatif, bouton ✅ Appeler, compte rendu à la fin). Point du matin à 7 h 30.
+En langage naturel : « rappelle-moi demain 9 h de… », « tous les lundis à 8 h, rappelle-moi… » (rappels répétés), « qu'est-ce que j'ai jeudi ? », « décale / annule mon dentiste » (Google Agenda, une fois `scripts/google_auth.py` passé), « appelle ma mère pour lui dire… » (récapitulatif, bouton ✅ Appeler, compte rendu, échange et audio à la fin). Point du matin à 7 h 30.
+
+Marcus lit aussi les photos (avec ou sans légende) et retient les contacts partagés depuis Telegram.
 
 ## Structure
 

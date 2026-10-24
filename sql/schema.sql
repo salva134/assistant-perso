@@ -63,6 +63,9 @@ create table if not exists calls (
   ended_at timestamptz
 );
 
+-- Rappels qui se répètent : aucune, quotidienne, jours_ouvres, hebdomadaire, mensuelle
+alter table reminders add column if not exists repetition text not null default 'aucune';
+
 -- Appels reçus (rappels de commerces, proches…) : même table, sens 'entrant'
 alter table calls add column if not exists direction text not null default 'sortant';
 create unique index if not exists calls_vapi_id_idx on calls (vapi_id);

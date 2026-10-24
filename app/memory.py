@@ -271,6 +271,17 @@ async def update_memory(pool, embed: Embedder, memory_id: int, content: str, typ
         )
 
 
+async def remember_contact(pool, embed: Embedder, nom: str, souvenir: str) -> None:
+    """Contact partagé sur Telegram : remplace l'ancien numéro de cette personne s'il existe."""
+    anciens = [
+        s for s in await find_memories(pool, nom) if "numéro" in s.content.lower() or "numero" in s.content.lower()
+    ]
+    if anciens:
+        await update_memory(pool, embed, anciens[0].id, souvenir, "profil")
+    else:
+        await apply_operations(pool, embed, [Operation("ajouter", 0, "profil", souvenir)], None)
+
+
 def make_embedder(openai_client, pool) -> Embedder:
     async def embed(text: str) -> list[float]:
         r = await openai_client.embeddings.create(model=EMBEDDING_MODEL, input=text)
