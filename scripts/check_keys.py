@@ -100,16 +100,16 @@ def test_supabase() -> tuple[str, str]:
             ).fetchone()[0]
             tables = conn.execute(
                 "select count(*) from information_schema.tables where table_schema = 'public'"
-                " and table_name in ('messages', 'memories', 'reminders', 'usage')"
+                " and table_name in ('messages', 'memories', 'reminders', 'usage', 'calls')"
             ).fetchone()[0]
     except psycopg.OperationalError as e:
         # Le message d'erreur de psycopg ne contient pas le mot de passe
         return ECHEC, str(e).strip().splitlines()[-1][:150]
     if not vector:
         return ECHEC, "connexion OK, mais extension vector absente"
-    if tables < 4:
-        return ECHEC, f"{tables}/4 tables : lancer python scripts/apply_schema.py"
-    return OK, "connexion OK, extension vector, 4/4 tables"
+    if tables < 5:
+        return ECHEC, f"{tables}/5 tables : lancer python scripts/apply_schema.py"
+    return OK, "connexion OK, extension vector, 5/5 tables"
 
 
 def test_vapi() -> tuple[str, str]:

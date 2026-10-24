@@ -59,16 +59,23 @@ async def record(
         logger.exception("Impossible d'enregistrer le coût d'un appel %s", model)
 
 
+PRIX_RECHERCHE_WEB = 0.01  # 10 $ les 1 000 recherches
+
+
 async def record_claude(pool, response) -> None:
     u = response.usage
+    recherches = getattr(getattr(u, "server_tool_use", None), "web_search_requests", 0) or 0
+    lecture, ecriture = u.cache_read_input_tokens or 0, u.cache_creation_input_tokens or 0
     await record(
         pool,
         "claude",
         response.model,
         u.input_tokens,
         u.output_tokens,
-        u.cache_read_input_tokens or 0,
-        u.cache_creation_input_tokens or 0,
+        lecture,
+        ecriture,
+        cost_usd=cost(response.model, u.input_tokens, u.output_tokens, lecture, ecriture)
+        + recherches * PRIX_RECHERCHE_WEB,
     )
 
 

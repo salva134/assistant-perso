@@ -125,6 +125,22 @@ def test_reply_transmet_l_erreur_d_un_outil_au_modele():
     assert "déjà passée" in resultat_outil["content"]
 
 
+def test_recherche_web_declaree_et_reprise_apres_pause():
+    toolbox = llm.Toolbox()
+    toolbox.add_server_tool({"type": "web_search_20260209", "name": "web_search"})
+    recherche = SimpleNamespace(type="server_tool_use", id="s1", name="web_search", input={})
+    client = FauxClient(
+        reponse("pause_turn", recherche),
+        reponse("end_turn", texte("Le numéro de Da Luigi est le 04 42 00 00 00.")),
+    )
+    resultat = asyncio.run(llm.reply(client, "m", "s", [], "Numéro de Da Luigi ?", toolbox=toolbox))
+    assert resultat == "Le numéro de Da Luigi est le 04 42 00 00 00."
+    assert client.requetes[0]["tools"] == [{"type": "web_search_20260209", "name": "web_search"}]
+    # Après la pause, la réponse partielle repart telle quelle, sans message ajouté
+    assert client.requetes[1]["messages"][-1] == {"role": "assistant", "content": [recherche]}
+    assert "web_search" not in toolbox.handlers  # exécutée chez Anthropic, pas chez nous
+
+
 def test_reply_s_arrete_apres_trop_de_tours():
     appel = SimpleNamespace(type="tool_use", id="t", name="x", input={})
     client = FauxClient(*[reponse("tool_use", appel)] * llm.MAX_TOURS_OUTILS)

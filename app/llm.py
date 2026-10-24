@@ -29,6 +29,10 @@ class Toolbox:
         self.definitions.append(definition)
         self.handlers[definition["name"]] = handler
 
+    def add_server_tool(self, definition: dict) -> None:
+        """Outil exécuté chez Anthropic (ex. recherche web) : rien à faire de notre côté."""
+        self.definitions.append(definition)
+
 
 def load_system_prompt(path: Path = PROMPT_SYSTEME) -> str:
     return path.read_text(encoding="utf-8").strip()
@@ -110,6 +114,10 @@ async def reply(
         response = await client.messages.create(messages=messages, **params)
         if on_response:
             await on_response(response)
+        if response.stop_reason == "pause_turn":
+            # Une recherche web longue a été mise en pause : on renvoie tel quel, l'API reprend
+            messages.append({"role": "assistant", "content": response.content})
+            continue
         if response.stop_reason != "tool_use":
             break
         # La réponse complète (avec les blocs tool_use) repart telle quelle

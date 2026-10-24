@@ -162,12 +162,23 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await answer(update, context, texte, entete=f"🎤 « {texte} »\n\n")
 
 
+async def keep_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Telegram efface « en train d'écrire… » au bout de 5 s : on le renvoie tant que Marcus
+    travaille (une recherche web peut prendre 20 s)."""
+    while True:
+        try:
+            await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        except Exception:
+            logger.debug("Indicateur de frappe non envoyé", exc_info=True)
+        await asyncio.sleep(4)
+
+
 async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, entete: str = "") -> None:
     """Répond à un message (écrit ou transcrit) : souvenirs, Claude, base, apprentissage."""
     data = context.bot_data
     config, pool = data["config"], data["pool"]
+    frappe = asyncio.create_task(keep_typing(context, update.effective_chat.id))
     try:
-        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         history = await memory.recent_messages(pool, TAILLE_HISTORIQUE)
         souvenirs = await memory.memories_for_prompt(pool, data["embed"], user_text)
         reponse = await llm.reply(
@@ -188,6 +199,8 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
         await update.message.reply_text(entete + MESSAGE_ERREUR)
         await record_failure(context, "réponse")
         return
+    finally:
+        frappe.cancel()
     record_success(context)
     await send_long(update, entete + reponse)
     context.application.create_task(
@@ -363,6 +376,18 @@ def build_application() -> Application:
         learn_lock=asyncio.Lock(),
     )
     toolbox = llm.Toolbox()
+    # Recherche web chez Anthropic : trouver le numéro d'un restaurant, des horaires…
+    toolbox.add_server_tool({
+        "type": "web_search_20260209",
+        "name": "web_search",
+        "max_uses": 3,
+        "user_location": {
+            "type": "approximate",
+            "city": config.home_city,
+            "country": "FR",
+            "timezone": config.timezone,
+        },
+    })
     reminders.add_tools(toolbox, pool, app.job_queue, config.timezone)
     agenda = None
     if config.google_enabled:

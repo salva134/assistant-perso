@@ -10,8 +10,9 @@ from app import calls, memory, usage
 
 logger = logging.getLogger(__name__)
 
-# Au-delà, on arrête de suivre un appel qui ne se termine pas (Vapi coupe à 5 minutes)
-SUIVI_MAX = timedelta(minutes=15)
+# Au-delà, on arrête de suivre un appel qui ne se termine pas. Compté depuis le lancement
+# de l'appel chez Vapi : Vapi le coupe de lui-même après DUREE_MAX_APPEL_SECONDES.
+SUIVI_MAX = timedelta(seconds=calls.DUREE_MAX_APPEL_SECONDES) + timedelta(minutes=10)
 
 
 def buttons(call_id: int) -> InlineKeyboardMarkup:
@@ -71,6 +72,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if refus:
         await query.answer(refus, show_alert=True)
         return
+    if not await calls.claim(pool, call_id):
+        await query.answer("Cet appel a déjà été traité.")
+        return
 
     await query.answer("J'appelle…")
     try:
@@ -124,7 +128,7 @@ async def check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Suivi de l'appel n°%s impossible", appel.id)
         return
     if etat.get("status") != "ended":
-        if datetime.now(timezone.utc) - appel.created_at > SUIVI_MAX:
+        if datetime.now(timezone.utc) - launch_time(appel, etat) > SUIVI_MAX:
             context.job.schedule_removal()
             await calls.finish(pool, appel.id, "echec", "suivi-abandonne", None, None, None)
             await context.bot.send_message(
@@ -135,6 +139,13 @@ async def check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     context.job.schedule_removal()
     await report(context, appel, etat)
+
+
+def launch_time(appel: calls.Appel, etat: dict) -> datetime:
+    """Heure de lancement chez Vapi. Le récapitulatif a pu être créé jusqu'à 10 minutes avant."""
+    if etat.get("createdAt"):
+        return datetime.fromisoformat(etat["createdAt"].replace("Z", "+00:00"))
+    return appel.created_at
 
 
 async def report(context: ContextTypes.DEFAULT_TYPE, appel: calls.Appel, etat: dict) -> None:
@@ -167,6 +178,8 @@ async def report(context: ContextTypes.DEFAULT_TYPE, appel: calls.Appel, etat: d
     texte = calls.format_report(appel, duree, resume, transcript)
     for i in range(0, len(texte), 4096):
         await context.bot.send_message(data["config"].allowed_user_id, texte[i : i + 4096])
+    # Le compte rendu rejoint la conversation : Hugo peut ensuite demander « c'était combien ? »
+    await memory.save_message(pool, "assistant", f"[Compte rendu de l'appel à {appel.destinataire}] {resume}")
     logger.info("Appel n°%s terminé (%s)", appel.id, raison)
 
 

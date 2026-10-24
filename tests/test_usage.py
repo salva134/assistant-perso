@@ -3,6 +3,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app import main, usage
 
 
@@ -17,6 +19,24 @@ def test_cout_du_cache():
 
 def test_modele_inconnu_compte_au_prix_fort():
     assert usage.cost("modele-mystere", 1_000_000) == 2.00
+
+
+def test_les_recherches_web_sont_comptees(monkeypatch):
+    enregistre = {}
+
+    async def record(pool, service, model, *args, cost_usd=None):
+        enregistre["cout"] = cost_usd
+
+    monkeypatch.setattr(usage, "record", record)
+    reponse = SimpleNamespace(
+        model="claude-haiku-5-5",
+        usage=SimpleNamespace(
+            input_tokens=1_000_000, output_tokens=0, cache_read_input_tokens=0,
+            cache_creation_input_tokens=0, server_tool_use=SimpleNamespace(web_search_requests=2),
+        ),
+    )
+    asyncio.run(usage.record_claude(None, reponse))
+    assert enregistre["cout"] == pytest.approx(0.10 + 2 * 0.01)
 
 
 def test_format_dollars():

@@ -30,6 +30,8 @@ class Config:
     openai_api_key: str = field(repr=False)
     database_url: str = field(repr=False)
     timezone: str = "Europe/Paris"
+    # Ville d'Hugo : oriente la recherche web (« le restaurant le plus proche »…)
+    home_city: str = "Aubagne"
     daily_budget_usd: float = PLAFOND_JOUR_PAR_DEFAUT
     model: str = MODELE
     # Google Agenda : facultatif, actif seulement si les trois valeurs sont remplies
@@ -76,6 +78,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         openai_api_key=env["OPENAI_API_KEY"].strip(),
         database_url=env["DATABASE_URL"].strip(),
         timezone=env.get("TIMEZONE", "").strip() or "Europe/Paris",
+        home_city=env.get("HOME_CITY", "").strip() or "Aubagne",
         daily_budget_usd=plafond_usd,
         google_client_id=env.get("GOOGLE_CLIENT_ID", "").strip(),
         google_client_secret=env.get("GOOGLE_CLIENT_SECRET", "").strip(),

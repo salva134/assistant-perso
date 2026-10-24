@@ -192,10 +192,13 @@ class FausseQuery:
 
 @pytest.fixture
 def bouton(monkeypatch):
-    etat = SimpleNamespace(appel=appel(), statuts=[], suivis=[], lances=[], refus=None)
+    etat = SimpleNamespace(appel=appel(), statuts=[], suivis=[], lances=[], refus=None, deja_pris=False)
 
     async def get(pool, call_id):
         return etat.appel
+
+    async def claim(pool, call_id):
+        return not etat.deja_pris
 
     async def set_status(pool, call_id, status, vapi_id=None):
         etat.statuts.append((status, vapi_id))
@@ -213,6 +216,7 @@ def bouton(monkeypatch):
 
     monkeypatch.setattr(memory, "all_memories", all_memories)
     monkeypatch.setattr(calls, "get", get)
+    monkeypatch.setattr(calls, "claim", claim)
     monkeypatch.setattr(calls, "set_status", set_status)
     monkeypatch.setattr(calls_bot, "refusal_reason", refusal_reason)
     monkeypatch.setattr(calls_bot, "follow", lambda job_queue, call_id: etat.suivis.append(call_id))
@@ -254,6 +258,23 @@ def test_appel_deja_traite_n_est_pas_relance(bouton):
     assert bouton.lances == [] and "déjà" in query.reponses[0]
 
 
+def test_double_clic_ne_lance_qu_un_appel(bouton):
+    # Le 2e clic arrive alors que le 1er a déjà pris l'appel en base
+    bouton.deja_pris = True
+    query = cliquer(bouton, "appel:oui:12")
+    assert bouton.lances == []
+    assert "déjà" in query.reponses[0]
+
+
+def test_suivi_compte_depuis_le_lancement_chez_vapi():
+    # Récapitulatif créé il y a 9 min, appel lancé il y a 2 min : on doit encore le suivre
+    a = appel(created_at=datetime.now(timezone.utc) - timedelta(minutes=9))
+    lancement = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat().replace("+00:00", "Z")
+    depuis = datetime.now(timezone.utc) - calls_bot.launch_time(a, {"createdAt": lancement})
+    assert depuis < timedelta(minutes=3)
+    assert calls_bot.SUIVI_MAX > timedelta(seconds=calls.DUREE_MAX_APPEL_SECONDES)
+
+
 def test_refus_si_un_appel_est_deja_en_cours(bouton):
     bouton.refus = "Un appel est déjà en cours : attends son compte rendu."
     query = cliquer(bouton, "appel:oui:12")
@@ -266,7 +287,13 @@ def test_refus_si_un_appel_est_deja_en_cours(bouton):
 
 @pytest.fixture
 def compte_rendu(monkeypatch):
-    etat = SimpleNamespace(fini=[], couts=[], envois=[])
+    etat = SimpleNamespace(fini=[], couts=[], envois=[], conversation=[])
+
+    async def save_message(pool, role, content):
+        etat.conversation.append((role, content))
+        return 1
+
+    monkeypatch.setattr(memory, "save_message", save_message)
 
     async def finish(pool, call_id, status, raison, resume, transcript, duree):
         etat.fini.append((status, raison, resume, duree))
@@ -301,6 +328,9 @@ def test_compte_rendu_apres_une_conversation(compte_rendu):
     assert ("vapi", 0.054) in compte_rendu.couts
     assert any(service == "twilio" for service, _ in compte_rendu.couts)
     assert "Message transmis" in compte_rendu.envois[0]
+    # Le compte rendu rejoint la conversation pour les questions suivantes d'Hugo
+    role, contenu = compte_rendu.conversation[0]
+    assert role == "assistant" and "Maman" in contenu and "Message transmis" in contenu
 
 
 def test_personne_n_a_decroche(compte_rendu):

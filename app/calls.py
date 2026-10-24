@@ -140,6 +140,17 @@ async def set_status(pool, call_id: int, status: str, vapi_id: str | None = None
         )
 
 
+async def claim(pool, call_id: int) -> bool:
+    """Passe l'appel de « en_attente » à « lancement » en une seule requête : deux clics
+    rapprochés sur « Appeler » ne peuvent pas lancer deux appels."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "update calls set status = 'lancement' where id = %s and status = 'en_attente' returning id",
+            (call_id,),
+        )
+        return await cur.fetchone() is not None
+
+
 async def finish(pool, call_id, status, ended_reason, resume, transcript, duree) -> None:
     async with pool.connection() as conn:
         await conn.execute(
